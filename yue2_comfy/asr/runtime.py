@@ -9,7 +9,10 @@ the model file and the seed: a new seed asks for a new layout and nothing more.
 The words of a song are recognised in one pass over the whole recording, which
 hears them best. Each section with a voice in it is then heard once more on its
 own, and those rougher texts only guide where the whole song's words are cut
-(see ``align``).
+(see ``align``). The guides are kept with the words, so that another text of
+the same song -- the lyrics a language model wrote from a second hearing --
+is cut the same way (``split``), and that model's answer is kept like a
+layout (``chosen``).
 
 The forced aligner is kept here as well, in a second slot: a different model
 on the same network, asked by 'YuE2 Edit Track' when each word of a song is
@@ -68,6 +71,7 @@ _STATE = {"key": None, "net": None, "tokenizer": None}
 _ALIGNER = {"key": None, "held": None}
 _RESULTS = collections.OrderedDict()
 _LAYOUTS = collections.OrderedDict()
+_CHOSEN = collections.OrderedDict()
 _TIMES = collections.OrderedDict()
 _HEARD = collections.OrderedDict()
 
@@ -409,6 +413,7 @@ def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cance
     language = told or whole["language"] or ""
     guide = told or guide_language(language)
     parts = [""] * len(timed)
+    guides = None
     if guided:
         guides = [""] * len(timed)
         for step, index in enumerate(sung, start=1):
@@ -423,7 +428,25 @@ def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cance
         log.info("[yue2_comfy.asr] guided %d sections in %.1f s", len(sung), time.monotonic() - began)
     elif timed:
         parts[sung[0] if sung else 0] = whole["text"]
-    return {"language": language, "text": whole["text"], "parts": parts}
+    return {"language": language, "text": whole["text"], "parts": parts, "guides": guides}
+
+
+def split(words: dict, text: str, timed: list) -> list:
+    """Another text of the same song cut into ``timed``'s sections the way ``recognise`` cut its own words.
+
+    ``words`` is what ``recognise`` gave: its section guides cut ``text`` as
+    they cut the words they were heard with, and a song with one sung
+    section gets the whole text there.
+    """
+    from . import align
+
+    if words.get("guides") is not None:
+        return align.split(text, words["guides"])
+    parts = [""] * len(timed)
+    if timed:
+        sung = [index for index, section in enumerate(timed) if section["notes"] > 0]
+        parts[sung[0] if sung else 0] = text
+    return parts
 
 
 def laid_out(key, produce):
@@ -432,4 +455,16 @@ def laid_out(key, produce):
     if found is None:
         found = produce()
         _put(_LAYOUTS, key, found)
+    return found
+
+
+def chosen(key, produce):
+    """The language model's choice between two hearings kept for ``key``, or ``produce()``'s, kept for next time.
+
+    Kept apart from the layouts, so that choosing does not push them out.
+    """
+    found = _get(_CHOSEN, key)
+    if found is None:
+        found = produce()
+        _put(_CHOSEN, key, found)
     return found

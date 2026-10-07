@@ -1,6 +1,6 @@
 # Licenses and provenance
 
-This pack carries ten kinds of material under their own terms.
+This pack carries eleven kinds of material under their own terms.
 
 ## The pack's own code
 
@@ -22,6 +22,14 @@ them since 2026-09-21, a rule written here from its description and checked
 against the names their tests expect, not copied. The speech model's
 log-mel front end follows the arithmetic of OpenAI's Whisper (MIT) and of
 Hugging Face's feature extractor (Apache-2.0), as Qwen3-ASR's own release does.
+
+`yue2_comfy/whisper/` is this pack's own implementation of Whisper large-v3
+turbo, under the same terms. Its long-form decoding -- thirty seconds at a
+time, the timestamp rules, the fall back to higher temperatures -- follows
+OpenAI's Whisper (MIT) and the Whisper generation of Hugging Face transformers
+(Apache-2.0) as they behave, and was checked against transformers 5.8: every
+window both decoded greedily from the same point gave the same tokens. It is
+written here, not copied from either.
 
 `yue2_comfy/vocals/` is this pack's own implementation of Mel-Band RoFormer
 (Wang, Lu and Won, 2023), under the same terms. Its shapes and arithmetic follow
@@ -143,6 +151,18 @@ where each line of a song is sung with Qwen3-ForcedAligner-0.6B from
 also Apache-2.0, downloaded on first use and not redistributed. It runs on the
 same code of the pack's own, `yue2_comfy/asr/aligner.py`, and reads words with
 the speech model's tokenizer, which is the same one.
+
+## The second hearing
+
+**MIT.**
+
+With `second_hearing` on, `YuE2 Transcribe` hears the words a second time with
+OpenAI's Whisper large-v3 turbo from
+[openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo):
+the weights, `tokenizer.json` and `generation_config.json`, downloaded on first
+use and not redistributed. A copy already on the machine is used where it lies.
+The pack runs it with its own code, `yue2_comfy/whisper/`, rather than with
+OpenAI's package or transformers.
 
 ## The voice separator
 

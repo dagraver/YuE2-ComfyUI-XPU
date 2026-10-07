@@ -116,7 +116,11 @@ jobs:
                         yue2_comfy/asr/decode.py yue2_comfy/asr/layout.py \
                         yue2_comfy/asr/model.py yue2_comfy/asr/network.py \
                         yue2_comfy/asr/prompt.py yue2_comfy/asr/runtime.py \
-                        yue2_comfy/asr/tokenizer.py yue2_comfy/sheetsage/__init__.py \
+                        yue2_comfy/asr/tokenizer.py yue2_comfy/asr/mend.py \
+                        yue2_comfy/languages.py yue2_comfy/whisper/__init__.py \
+                        yue2_comfy/whisper/decode.py yue2_comfy/whisper/network.py \
+                        yue2_comfy/whisper/model.py yue2_comfy/whisper/runtime.py \
+                        yue2_comfy/whisper/tokenizer.py yue2_comfy/sheetsage/__init__.py \
                         yue2_comfy/sheetsage/vocab.py yue2_comfy/sheetsage/grammar.py \
                         yue2_comfy/sheetsage/events.py yue2_comfy/sheetsage/abc_rebuild.py \
                         yue2_comfy/sheetsage/network.py yue2_comfy/sheetsage/model.py \

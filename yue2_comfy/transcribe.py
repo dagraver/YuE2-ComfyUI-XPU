@@ -32,6 +32,16 @@ translated; named, the language is told to every pass over the song (see
 ``told_language`` for several, and ``languages`` for what may be written).
 The node's caption ends with the language the words were heard in.
 
+'second_hearing' hears the words a second time, with Whisper large-v3 turbo
+told the same language, and the language model in 'model' writes the lyrics
+from both hearings, word by word; its answer is checked before it replaces
+Qwen3-ASR's words, and those words are cut into the sections the way Qwen3's
+own were (see ``asr.mend``). Left at 'auto', the language is the one Whisper
+hears over the whole song, and Qwen3-ASR hears the song again when its own
+words say otherwise. Whisper's words, its language and the model's choice are
+kept, so a new seed asks the model again and hears nothing again. The caption
+then says how many words were taken from Whisper.
+
 The score and lyrics editors sit on this node as they do on the song node, and
 an edit is kept for the recording it was made on; an edit with no mark,
 written before the node ever ran, is output as it is, the way the song node
@@ -90,10 +100,10 @@ RECOGNITION_TOOLTIP = (
     "Recognised words are close but not exact: read them through in 'Edit lyrics...' before singing them."
 )
 MODEL_TOOLTIP = (
-    "The language model that breaks recognised words into lines. Used only with "
-    "'lyrics_auto_recognition' on; the same list as on YuE2 Write Song, and 'auto' downloads the "
-    "writer's own model (2.55 GB) when the machine has none. A section whose words "
-    "it changes is broken into lines at its punctuation instead."
+    "The language model that breaks recognised words into lines, and with 'second_hearing' on first chooses "
+    "between the two hearings. Used only with 'lyrics_auto_recognition' on; the same list as on YuE2 Write "
+    "Song, and 'auto' downloads the writer's own model (2.55 GB) when the machine has none. A section whose "
+    "words it changes is broken into lines at its punctuation instead."
 )
 SEED_TOOLTIP = (
     "Changes only how the recognised words are broken into lines. The transcription and the words "
@@ -110,6 +120,12 @@ LANGUAGE_TOOLTIP = (
     "commas. Used only with 'lyrics_auto_recognition' on.\n\n"
     "'auto' lets the speech model tell, and it can be wrong: a song it takes for another language may come "
     "out translated. Name the language when the recognised words are not in it."
+)
+SECOND_HEARING_TOOLTIP = (
+    "Hear the words a second time, with Whisper, and let the language model in 'model' take each word from "
+    "whichever hearing makes sense. Used only with 'lyrics_auto_recognition' on.\n\n"
+    "The first time, this downloads Whisper large-v3 turbo, a 1.6 GB speech model (MIT), into models/YuE2. "
+    "The larger the model in 'model', the more words it mends; 'Model list...' shows what there is to choose."
 )
 LYRICS_EDIT_TOOLTIP = (
     "The edited lyrics kept on this node. Empty at first, which means the lyrics output is the "
@@ -178,6 +194,20 @@ LANGUAGE_DOUBT = (
 LANGUAGE_UNKNOWN = (
     "Qwen3-ASR does not know {name}, so it told the language itself and heard the song as {label}."
 )
+LANGUAGE_REHEARD = (
+    "Whisper hears {language} in this song, and the words Qwen3-ASR wrote did not look like it, so Qwen3-ASR "
+    "heard them again in {language}. If the song is sung in another language, write it in 'language'."
+)
+MEND_REFUSED = (
+    "The language model's choice between the two hearings {why}, so the words are Qwen3-ASR's."
+)
+MEND_WHY = {
+    "empty": "came back empty",
+    "longer": "came out longer than either hearing",
+    "shorter": "left out words both hearings have",
+    "novel": "held too many words neither hearing has",
+}
+MEND_LEFT_OUT = "The second hearing was left out ({reason}), so the words are Qwen3-ASR's."
 CANNOT_HEAR = "SheetSage2 could not transcribe this recording: {reason}."
 CANNOT_RECOGNISE = "Qwen3-ASR could not hear this recording: {reason}."
 WRITER_FETCHED = (
@@ -323,7 +353,8 @@ class YuE2Transcribe:
         "'lyrics_auto_recognition' to have them recognised.\n\n"
         "The transcription model, SheetSage2, is downloaded on first use (1.29 GB); its weights "
         "are licensed CC BY-NC 4.0, like YuE2's. Recognising the words downloads Qwen3-ASR-1.7B "
-        "(3.8 GB, Apache-2.0) the first time it is turned on."
+        "(3.8 GB, Apache-2.0) the first time it is turned on, and hearing them a second time Whisper "
+        "large-v3 turbo (1.6 GB, MIT)."
     )
     OUTPUT_NODE = True
 
@@ -346,6 +377,7 @@ class YuE2Transcribe:
                 "lyrics": ("STRING", {"multiline": True, "default": "", "tooltip": LYRICS_EDIT_TOOLTIP}),
                 "listen": (list(LISTEN_CHOICES), {"default": LISTEN_CHOICES[0], "tooltip": LISTEN_TOOLTIP}),
                 "language": ("STRING", {"default": languages.AUTO, "tooltip": LANGUAGE_TOOLTIP}),
+                "second_hearing": ("BOOLEAN", {"default": False, "tooltip": SECOND_HEARING_TOOLTIP}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -376,7 +408,8 @@ class YuE2Transcribe:
         return llm.known(model) or True
 
     def transcribe(self, audio, mode, lyrics_auto_recognition, model, seed, options=None,
-                   score_abc="", lyrics="", listen=LISTEN_CHOICES[0], language=languages.AUTO, unique_id=None):
+                   score_abc="", lyrics="", listen=LISTEN_CHOICES[0], language=languages.AUTO, second_hearing=False,
+                   unique_id=None):
         progress = NodeProgress(unique_id, title="YuE2 Transcribe")
         settings = resolve(options)
         if mode not in MODE_CHOICES:
@@ -405,7 +438,7 @@ class YuE2Transcribe:
         keep_score = bool(kept.score) and kept.words in (None, score_mark)
         heard = None
         if not keep_score or lyrics_auto_recognition:
-            band = Band(progress, 0.0, 0.4) if lyrics_auto_recognition else progress
+            band = Band(progress, 0.0, 0.35 if second_hearing else 0.4) if lyrics_auto_recognition else progress
             heard = self._heard(track, recording, settings, band, unique_id, listen)
             if heard.get("cut_short"):
                 from .sheetsage import vocab
@@ -427,9 +460,10 @@ class YuE2Transcribe:
         found = _sections(score)
         own = sections.skeleton(found)
         heard_in = ""
+        taken = None
         if lyrics_auto_recognition:
-            recognised, heard_in = self._recognised(track, recording, heard, settings, model, seed, progress,
-                                                    unique_id, findings, named)
+            recognised, heard_in, taken = self._recognised(track, recording, heard, settings, model, seed, progress,
+                                                           unique_id, findings, named, bool(second_hearing))
             own = recognised or own
         kept_lyrics = edits.read(lyrics)
         if kept_lyrics.score and kept_lyrics.words in (None, recording):
@@ -447,6 +481,8 @@ class YuE2Transcribe:
         summary = "{} sections, {:.0f} seconds".format(len(found), track["seconds"])
         if heard_in:
             summary += ", words heard in {}".format(heard_in)
+        if taken is not None:
+            summary += ", {} {} from Whisper".format(taken, "word" if taken == 1 else "words")
         progress.finish(summary)
         return {"ui": ui, "result": (score, words_out)}
 
@@ -488,31 +524,65 @@ class YuE2Transcribe:
             refuse(unique_id, NO_SCORE.format(reason=str(error).rstrip(".")))
 
     def _recognised(self, track, recording, heard, settings, model, seed, progress, unique_id, findings,
-                    named=()) -> tuple:
-        """The recognised words laid out under the section tags ("" when none were heard), and their language.
+                    named=(), second=False) -> tuple:
+        """The recognised words laid out under the section tags ("" when none were heard), their language, and the words taken from Whisper.
 
         ``named`` is what the 'language' field names (``languages.parse``);
         the speech model is told the one ``told_language`` picks from it.
+        With ``second`` the words are heard a second time and mended
+        (``_second_hearing``); the last value is then how many words the
+        mending took from Whisper, and None when it did not run or its answer
+        was refused.
         """
-        from . import devices, download
-        from .asr import runtime as asr_runtime
+        from . import download
         from .sheetsage import events, sections
 
         try:
             timed = sections.timed(events.score_rows(heard["events"], heard["seconds"]), heard["seconds"])
         except ValueError:
             timed = [{"label": "", "tag": "Verse", "start": 0.0, "end": float(heard["seconds"]), "notes": 1}]
-        band = Band(progress, 0.4, 0.8)
+        if second:
+            hearing, naming, listening, choosing, laying = (
+                Band(progress, 0.35, 0.6), Band(progress, 0.6, 0.62), Band(progress, 0.62, 0.7),
+                Band(progress, 0.7, 0.85), Band(progress, 0.85, 1.0))
+        else:
+            hearing, laying = Band(progress, 0.4, 0.8), Band(progress, 0.8, 1.0)
         try:
-            folder = download.ensure_asr(settings, band)
+            folder = download.ensure_asr(settings, hearing)
         except (FileNotFoundError, download.DownloadError) as error:
             refuse(unique_id, str(error))
         told = told_language(named)
+        words = self._words(folder, track, recording, timed, settings, hearing, unique_id, told)
+        if not any(part.strip() for part in words["parts"]):
+            findings.append(("notice", NO_WORDS))
+            return "", words.get("language") or "", None
+        parts, taken, context = words["parts"], None, 0
+        if second:
+            words, parts, taken, context = self._second_hearing(track, recording, timed, folder, words, named, model, seed,
+                                                       settings, (hearing, naming, listening, choosing), unique_id,
+                                                       findings)
+        language = words.get("language") or ""
+        pieces = [{"tag": section["tag"], "text": part} for section, part in zip(timed, parts)]
+        wanted = sum(1 for piece in pieces if piece["text"].strip())
+        findings.extend(_language_findings(named, told, words))
+        answer = self._layout(pieces, language, model, seed, settings, laying, findings, context)
+        from .asr import layout
+
+        lyrics, kept = layout.lay_out(pieces, answer)
+        if answer and kept < wanted:
+            findings.append(("notice", LAYOUT_CHANGED.format(changed=wanted - kept, total=wanted)))
+        return lyrics, language, taken
+
+    def _words(self, folder, track, recording, timed, settings, progress, unique_id, told) -> dict:
+        """Qwen3-ASR's words for the recording, told ``told`` ("" lets it tell), from the cache when heard before."""
+        from . import devices
+        from .asr import runtime as asr_runtime
+
         try:
-            words = asr_runtime.recognise(folder, devices.resolve(settings["device"]), track["samples"],
-                                          track["rate"], timed, key=(recording, asr_runtime.stamp(folder)),
-                                          progress=band, cancelled=interrupted,
-                                          low_vram=bool(settings.get("low_vram")), language=told)
+            return asr_runtime.recognise(folder, devices.resolve(settings["device"]), track["samples"],
+                                         track["rate"], timed, key=(recording, asr_runtime.stamp(folder)),
+                                         progress=progress, cancelled=interrupted,
+                                         low_vram=bool(settings.get("low_vram")), language=told)
         except InterruptedError:
             translate_interrupt()
             raise
@@ -521,51 +591,176 @@ class YuE2Transcribe:
         finally:
             if not settings["keep_model_loaded"]:
                 asr_runtime.unload()
-        language = words.get("language") or ""
-        pieces = [{"tag": section["tag"], "text": part} for section, part in zip(timed, words["parts"])]
-        wanted = sum(1 for piece in pieces if piece["text"].strip())
-        if not wanted:
-            findings.append(("notice", NO_WORDS))
-            return "", language
-        findings.extend(_language_findings(named, told, words))
-        answer = self._layout(pieces, language, model, seed, settings, Band(progress, 0.8, 1.0), findings)
-        from .asr import layout
 
-        lyrics, kept = layout.lay_out(pieces, answer)
-        if answer and kept < wanted:
-            findings.append(("notice", LAYOUT_CHANGED.format(changed=wanted - kept, total=wanted)))
-        return lyrics, language
+    def _second_hearing(self, track, recording, timed, folder, words, named, model, seed, settings, bands,
+                        unique_id, findings) -> tuple:
+        """``(words, parts, taken, context)``: Qwen3-ASR's words and their sections, mended with Whisper's where the model takes them.
 
-    def _layout(self, pieces, language, model, seed, settings, progress, findings) -> str:
-        """The language model's answer for these words, kept per words, model and seed; "" when there is none."""
+        The language is the field's; left at 'auto', it is Whisper's over the
+        whole song (``asr.mend.language_plan``), and Qwen3-ASR hears the song
+        again in it when its words say otherwise -- those words are returned
+        then, mended or not. Several languages are told to Whisper window by
+        window, the likelier of them in each: on three songs the pack sang in
+        Russian and English, that heard two of them best of the ways tried.
+        ``taken`` is None when the mending did not run or its answer was
+        refused; the node says why. ``context`` is the context the language
+        model was loaded with to choose, 0 when it was not asked: the layout
+        asks for at least as much, so the model is not loaded twice. Whisper
+        leaves the card at the end unless 'keep_model_loaded' keeps it.
+        """
+        from . import download
+        from .whisper import runtime as whisper_runtime
+
+        try:
+            whisper_folder = download.ensure_whisper(settings, bands[2])
+        except (FileNotFoundError, download.DownloadError) as error:
+            refuse(unique_id, str(error))
+        try:
+            return self._mended(track, recording, timed, folder, whisper_folder, words, named, model, seed, settings,
+                                bands, unique_id, findings)
+        finally:
+            if not settings["keep_model_loaded"]:
+                whisper_runtime.unload()
+
+    def _mended(self, track, recording, timed, folder, whisper_folder, words, named, model, seed, settings, bands,
+                unique_id, findings) -> tuple:
+        """The second hearing between fetching Whisper and letting it go: see ``_second_hearing``."""
+        from . import devices
+        from .asr import mend, runtime as asr_runtime
+        from .whisper import runtime as whisper_runtime
+
+        hearing, naming, listening, choosing = bands
+        device = devices.resolve(settings["device"])
+        low_vram = bool(settings.get("low_vram"))
+        unchanged = (words, words["parts"], None, 0)
+        if named:
+            codes = [languages.whisper_code(name) for name in named]
+            language = mend.spoken(named)
+        else:
+            windows = self._whispered(lambda: whisper_runtime.identify(
+                whisper_folder, device, track["samples"], track["rate"], recording, progress=naming,
+                cancelled=interrupted, low_vram=low_vram), findings)
+            if windows is None:
+                return unchanged
+            language, again = mend.language_plan(words, windows)
+            if not language:
+                findings.append(("notice", MEND_LEFT_OUT.format(reason="no language to hear the song in")))
+                return unchanged
+            if again:
+                findings.append(("notice", LANGUAGE_REHEARD.format(language=language)))
+                words = self._words(folder, track, recording, timed, settings, hearing, unique_id, language)
+                unchanged = (words, words["parts"], None, 0)
+            codes = [languages.whisper_code(language)]
+        second = self._whispered(lambda: whisper_runtime.hear(
+            whisper_folder, device, track["samples"], track["rate"], recording, codes[0] if len(codes) == 1 else codes,
+            progress=listening, cancelled=interrupted, low_vram=low_vram), findings)
+        if second is None:
+            return unchanged
+        if not second.get("text", "").strip():
+            findings.append(("notice", MEND_LEFT_OUT.format(reason="Whisper heard no words")))
+            return unchanged
+        answer, context = self._choice(language, words["text"], second["text"], model, seed, settings, choosing,
+                                       findings)
+        if answer is None:
+            return unchanged
+        verdict = mend.judged(words["text"], second["text"], answer)
+        if verdict["refused"]:
+            findings.append(("notice", MEND_REFUSED.format(why=MEND_WHY[verdict["refused"]])))
+            return words, words["parts"], None, context
+        return words, asr_runtime.split(words, verdict["text"], timed), verdict["taken"], context
+
+    def _whispered(self, hear, findings):
+        """``hear()``'s answer; None, with a notice, when Whisper could not hear the recording."""
+        try:
+            return hear()
+        except InterruptedError:
+            translate_interrupt()
+            raise
+        except ValueError as error:
+            findings.append(("notice", MEND_LEFT_OUT.format(reason="Whisper could not hear the recording: "
+                                                            + str(error).rstrip("."))))
+            return None
+
+    def _choice(self, language, first, second, model, seed, settings, progress, findings):
+        """``(lyrics, context)``: what the language model writes from both hearings, and the context it was loaded with.
+
+        The answer is kept per hearings, model and seed; it is None, with a
+        notice, when the model fails. The model stays loaded for the layout
+        that follows.
+        """
+        from . import llm, writer
+        from .asr import mend, runtime as asr_runtime
+
+        chat = mend.messages(language, first, second)
+        context = writer.context_needed(chat, mend.ANSWER_TOKENS)
+        _writer_notice(model, settings, findings)
+        try:
+            path = llm.resolve(model, settings, progress)
+            digest = hashlib.sha256(repr(chat).encode("utf-8")).hexdigest()
+            progress.ratio(0.0, "Choosing between the two hearings")
+            return mend.answer_of(asr_runtime.chosen(
+                (digest, path, int(seed)),
+                lambda: llm.run(path, chat, int(seed), context, settings["device"], keep_loaded=True,
+                                progress=progress, settings=settings, greedy=False,
+                                max_new_tokens=mend.ANSWER_TOKENS, temperature=mend.TEMPERATURE, top_p=mend.TOP_P,
+                                top_k=mend.TOP_K, repetition_penalty=mend.REPEAT_PENALTY))), context
+        except Exception as error:
+            log.warning("[yue2_comfy] choosing between the two hearings failed", exc_info=True)
+            findings.append(("notice", MEND_LEFT_OUT.format(reason="the language model gave no answer: "
+                                                            + _reason(error))))
+            return None, 0
+
+    def _layout(self, pieces, language, model, seed, settings, progress, findings, context=0) -> str:
+        """The language model's answer for these words, kept per words, model, seed and context; "" when there is none.
+
+        ``context`` is a context the model was just loaded with, to choose
+        between two hearings: a smaller one than that is not asked for, so
+        the loaded model serves the layout too. The context joins the key,
+        since the same words in another context may come back laid out a
+        little differently.
+        """
         from . import llm, writer
         from .asr import layout, runtime as asr_runtime
 
         chat = layout.messages(pieces, language)
-        if (model or llm.WRITER_AUTO).strip() == llm.WRITER_AUTO and not llm.catalogue() \
-                and settings.get("download", "auto") != "off":
-            from . import download
-            from .constants import WRITER_BYTES, WRITER_NAME
-
-            findings.append(("notice", WRITER_FETCHED.format(name=WRITER_NAME, size=download.human_size(WRITER_BYTES))))
+        size = max(writer.context_needed(chat, LAYOUT_TOKENS), int(context or 0))
+        _writer_notice(model, settings, findings)
         try:
             path = llm.resolve(model, settings, progress)
             digest = hashlib.sha256(repr(chat).encode("utf-8")).hexdigest()
             progress.ratio(0.0, "Laying the words out in lines")
             return asr_runtime.laid_out(
-                (digest, path, int(seed)),
-                lambda: llm.run(path, chat, int(seed), writer.context_needed(chat, LAYOUT_TOKENS),
+                (digest, path, int(seed), size),
+                lambda: llm.run(path, chat, int(seed), size,
                                 settings["device"], keep_loaded=True, progress=progress, settings=settings,
                                 greedy=False, max_new_tokens=LAYOUT_TOKENS, temperature=LAYOUT_TEMPERATURE,
                                 top_p=LAYOUT_TOP_P))
         except Exception as error:
             log.warning("[yue2_comfy] laying the recognised words out failed", exc_info=True)
-            findings.append(("notice", LAYOUT_FAILED.format(reason=str(error).strip().splitlines()[0][:200]
-                                                             if str(error).strip() else type(error).__name__)))
+            findings.append(("notice", LAYOUT_FAILED.format(reason=_reason(error))))
             return ""
         finally:
             if not settings["keep_model_loaded"]:
                 llm.unload()
+
+
+def _reason(error) -> str:
+    """An error's first line, short enough for a notice, or its type when it says nothing."""
+    text = str(error).strip()
+    return text.splitlines()[0][:200] if text else type(error).__name__
+
+
+def _writer_notice(model, settings, findings) -> None:
+    """The notice that the writer's own model is being downloaded, once, when 'auto' finds no model on the machine."""
+    from . import download, llm
+    from .constants import WRITER_BYTES, WRITER_NAME
+
+    if (model or llm.WRITER_AUTO).strip() != llm.WRITER_AUTO or llm.catalogue() \
+            or settings.get("download", "auto") == "off":
+        return
+    notice = ("notice", WRITER_FETCHED.format(name=WRITER_NAME, size=download.human_size(WRITER_BYTES)))
+    if notice not in findings:
+        findings.append(notice)
 
 
 TRANSCRIBE_CLASSES = {"YuE2Transcribe": YuE2Transcribe}

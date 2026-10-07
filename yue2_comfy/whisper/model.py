@@ -177,8 +177,13 @@ def hear(net: network.Network, vocab: decode.Vocabulary, tokenizer, audio: torch
          cancelled=None, progress=None) -> dict:
     """The words of ``[samples]`` of mono 16 kHz audio heard in the language ``code``.
 
-    ``{"text", "segments", "windows", "again", "skipped", "disagreed"}``:
-    ``segments`` are ``{"start", "end", "tokens"}`` in seconds; ``again`` counts
+    ``code`` may also be several codes: each window is then told the one of
+    them Whisper finds likeliest in it (``_likeliest``), for a song sung in
+    more than one language.
+
+    ``{"text", "segments", "windows", "languages", "again", "skipped", "disagreed"}``:
+    ``languages`` is the code each window was told, ``segments`` are
+    ``{"start", "end", "tokens"}`` in seconds; ``again`` counts
     the decodings repeated at a higher temperature, ``skipped`` the windows
     dropped as silence, ``disagreed`` whether the captured step was dropped.
     ``progress(share)`` is told how much of the song is heard.
@@ -194,19 +199,23 @@ def _hear(net, vocab, tokenizer, audio, code, cancelled, progress):
         audio = F.pad(audio, (0, decode.WINDOW_SAMPLES - audio.numel()))
     mel = listening.log_mel(audio)
     total = mel.shape[1]
-    prompt = vocab.request(code)
+    codes = [code] if isinstance(code, str) else list(code)
+    prompt = vocab.request(codes[0])
     start = len(prompt)
     limit = vocab.context - start
     picker = Picker(vocab, net.device)
     static = net.static()
     graphs = net.device.type == "cuda" and network.GRAPHS
-    heard = {"segments": [], "windows": 0, "again": 0, "skipped": 0, "disagreed": False}
+    heard = {"segments": [], "windows": 0, "again": 0, "skipped": 0, "disagreed": False, "languages": []}
     seek = 0
     while seek < total:
         if cancelled is not None and cancelled():
             raise InterruptedError("Cancelled while Whisper was listening")
         frames = min(total - seek, decode.WINDOW_FRAMES)
         net.listen(static, net.encode(F.pad(mel[:, seek:seek + frames], (0, decode.WINDOW_FRAMES - frames))))
+        if len(codes) > 1:
+            prompt = vocab.request(_likeliest(net, vocab, static, codes))
+        heard["languages"].append(next(c for c, ident in vocab.languages.items() if ident == prompt[1]))
         rows = net.prefill(prompt, static)
         no_speech = float(rows[:1].softmax(dim=-1)[0, vocab.no_speech])
         for tried, temperature in enumerate(decode.TEMPERATURES):
@@ -234,6 +243,12 @@ def _hear(net, vocab, tokenizer, audio, code, cancelled, progress):
     tokens = [token for segment in heard["segments"] for token in segment["tokens"]]
     heard["text"] = tokenizer.decode(tokens).strip()
     return heard
+
+
+def _likeliest(net, vocab, static, codes) -> str:
+    """The code among ``codes`` Whisper finds likeliest after ``<|startoftranscript|>`` in the window it is listening to."""
+    logits = net.prefill([vocab.start], static)[0]
+    return max(codes, key=lambda code: float(logits[vocab.languages[code]]))
 
 
 def _decode(net, static, picker, first_logits, start, limit, temperature, draws, graphs, cancelled, heard):

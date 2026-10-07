@@ -55,10 +55,10 @@ def node(monkeypatch):
 
 
 def run(mode="full", data=b"recording", score_abc="", lyrics="", recognition=False, count=1, seed=1,
-        listen=transcribe.LISTEN_CHOICES[0], language="auto"):
+        listen=transcribe.LISTEN_CHOICES[0], language="auto", second=False):
     return transcribe.YuE2Transcribe().transcribe(
         {"data": data, "count": count}, mode, recognition, "auto", seed, score_abc=score_abc, lyrics=lyrics,
-        listen=listen, language=language, unique_id="7")
+        listen=listen, language=language, second_hearing=second, unique_id="7")
 
 
 def faithful_answer(messages):
@@ -90,7 +90,8 @@ def heard(node, monkeypatch):
         calls["told"] = language
         parts = ["" if section["notes"] == 0 else "Words of the {}. Sung once more.".format(section["tag"].lower())
                  for section in timed]
-        return {"language": language or "English", "text": " ".join(part for part in parts if part), "parts": parts}
+        return {"language": language or "English", "text": " ".join(part for part in parts if part), "parts": parts,
+                "guides": list(parts)}
 
     def fake_run(path, messages, seed, n_ctx, device, keep_loaded=False, progress=None, settings=None, **sampling):
         calls["llm"].append((path, seed, sampling.get("greedy")))
@@ -112,8 +113,9 @@ def test_the_widgets_sit_in_their_final_order():
     """ComfyUI restores saved widget values by position, so this order is a promise."""
     spec = transcribe.YuE2Transcribe.INPUT_TYPES()
     assert list(spec["required"]) == ["audio", "mode", "lyrics_auto_recognition", "model", "seed"]
-    assert list(spec["optional"]) == ["options", "score_abc", "lyrics", "listen", "language"]
+    assert list(spec["optional"]) == ["options", "score_abc", "lyrics", "listen", "language", "second_hearing"]
     assert spec["optional"]["language"][1]["default"] == "auto"
+    assert spec["optional"]["second_hearing"][1]["default"] is False
     assert transcribe.YuE2Transcribe.RETURN_NAMES == ("score_abc", "lyrics")
     assert spec["required"]["lyrics_auto_recognition"][1]["default"] is False
     assert spec["required"]["seed"][1]["control_after_generate"] == "fixed"
@@ -639,3 +641,180 @@ def test_recognition_tells_the_named_language_to_the_whole_song_and_every_sectio
     assert len(heard) == 3, "the same recording and language is answered from what was kept"
     left = asr_runtime.recognise("f", "d", "samples", 44100, timed, key=("a", 1))
     assert heard[3:] == ["", "English", "English"] and left["language"] == "English"
+
+
+@pytest.fixture
+def mended(heard, monkeypatch):
+    """Whisper and the choice replaced too: Whisper hears "twice" where Qwen3 heard "once", and the model takes it.
+
+    A choice is told from a layout by its system turn; ``heard["choice"]``
+    answers it. Returns what Whisper and the choice were asked.
+    """
+    from yue2_comfy import llm
+    from yue2_comfy.asr import mend, runtime as asr_runtime
+    from yue2_comfy.whisper import runtime as whisper_runtime
+
+    calls = heard
+    calls.update(identified=[], whispered=[], chosen=[], windows=[{"en": -0.1, "ru": -3.0}],
+                 whisper=lambda text: text.replace("once", "twice"),
+                 choice=lambda messages: "<lyrics>" + messages[1]["content"].split("Recogniser B:\n", 1)[1]
+                 + "</lyrics>")
+    layout_run = llm.run
+
+    def fake_run(path, messages, seed, n_ctx, device, keep_loaded=False, progress=None, settings=None, **sampling):
+        if messages[0]["content"].startswith(mend.RULES):
+            calls["chosen"].append((messages[1]["content"], seed, sampling))
+            return calls["choice"](messages)
+        return layout_run(path, messages, seed, n_ctx, device, keep_loaded, progress, settings, **sampling)
+
+    def fake_identify(folder, device, waveform, rate, key, progress=None, cancelled=None, low_vram=False):
+        calls["identified"].append(key)
+        return calls["windows"]
+
+    def fake_hear(folder, device, waveform, rate, key, code, progress=None, cancelled=None, low_vram=False):
+        calls["whispered"].append(code)
+        return {"text": calls["whisper"](calls["qwen_text"])}
+
+    real_recognise = asr_runtime.recognise
+
+    def remembered(*args, **kwargs):
+        words = real_recognise(*args, **kwargs)
+        calls["qwen_text"] = words["text"]
+        return words
+
+    monkeypatch.setattr(asr_runtime, "recognise", remembered)
+    monkeypatch.setattr(asr_runtime, "_CHOSEN", asr_runtime.collections.OrderedDict())
+    monkeypatch.setattr(llm, "run", fake_run)
+    monkeypatch.setattr(download, "ensure_whisper", lambda settings, progress=None: "whisper-folder")
+    monkeypatch.setattr(whisper_runtime, "identify", fake_identify)
+    monkeypatch.setattr(whisper_runtime, "hear", fake_hear)
+    monkeypatch.setattr(whisper_runtime, "unload", lambda: None)
+    return calls
+
+
+def sung(heard):
+    return [section for section in heard["timed"] if section["notes"] > 0]
+
+
+def test_without_the_second_hearing_whisper_is_never_asked(mended):
+    lyrics = run(recognition=True, language="en")["result"][1]
+    assert mended["identified"] == mended["whispered"] == mended["chosen"] == []
+    assert "Sung once more" in lyrics and "twice" not in lyrics
+
+
+def test_the_second_hearing_is_ignored_without_recognition(mended):
+    run(recognition=False, second=True)
+    assert mended["asr"] == 0 and mended["whispered"] == []
+
+
+def test_a_named_language_is_told_to_whisper_and_the_choice_mends_the_words(mended):
+    lyrics = run(recognition=True, language="en", second=True)["result"][1]
+    assert mended["identified"] == [] and mended["whispered"] == ["en"]
+    asked, seed, sampling = mended["chosen"][0]
+    assert asked.startswith("The words are in English.\n\nRecogniser A:\n" + mended["qwen_text"])
+    assert asked.endswith("Recogniser B:\n" + mended["qwen_text"].replace("once", "twice"))
+    assert (seed, sampling["temperature"], sampling["top_k"], sampling["repetition_penalty"]) == (1, 0.3, 20, 1.0)
+    assert lyrics.count("Sung twice more") == len(sung(mended)) and "once" not in lyrics
+    assert mended["said"] == [[]]
+
+
+def test_the_caption_counts_the_words_taken_from_whisper(mended, monkeypatch):
+    said = []
+
+    class Caption:
+        def __init__(self, node, title=None):
+            pass
+
+        def finish(self, message=None):
+            said.append(message)
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    monkeypatch.setattr(transcribe, "NodeProgress", Caption)
+    run(recognition=True, language="en", second=True)
+    run(recognition=True, language="en")
+    count = len(sung(mended))
+    assert said[0].endswith(", words heard in English, {} word{} from Whisper".format(count, "" if count == 1 else "s"))
+    assert said[1].endswith(", words heard in English")
+
+
+def test_several_languages_are_told_to_whisper_window_by_window(mended):
+    run(recognition=True, language="Russian, English", second=True)
+    assert mended["whispered"] == [["ru", "en"]] and mended["told"] == "Russian"
+    assert mended["chosen"][0][0].startswith("The words are in Russian and English.\n\n")
+
+
+def test_left_at_auto_whispers_language_stands_when_qwen_agrees(mended):
+    run(recognition=True, second=True)
+    assert mended["identified"] == [edits.audio_mark(b"recording", 44100)]
+    assert mended["whispered"] == ["en"] and mended["told"] == "" and mended["asr"] == 1
+    assert mended["said"] == [[]]
+
+
+def test_left_at_auto_qwen_hears_again_in_the_language_whisper_hears(mended):
+    mended["windows"] = [{"en": -3.0, "ru": -0.1}]
+    run(recognition=True, second=True)
+    assert mended["told"] == "Russian" and mended["asr"] == 2 and mended["whispered"] == ["ru"]
+    assert ("notice", transcribe.LANGUAGE_REHEARD.format(language="Russian")) in mended["said"][0]
+    assert mended["chosen"][0][0].startswith("The words are in Russian.\n\n")
+
+
+def test_an_answer_longer_than_both_hearings_is_refused_and_the_words_stay(mended):
+    mended["choice"] = lambda messages: "<lyrics>" + " ".join(["la"] * 400) + "</lyrics>"
+    lyrics = run(recognition=True, language="en", second=True)["result"][1]
+    assert "Sung once more" in lyrics and " la " not in lyrics
+    assert mended["said"] == [[("notice", transcribe.MEND_REFUSED.format(why=transcribe.MEND_WHY["longer"]))]]
+
+
+def test_a_choice_that_fails_leaves_the_words_as_heard_and_says_so(mended):
+    def broken(messages):
+        raise RuntimeError("out of memory")
+
+    mended["choice"] = broken
+    lyrics = run(recognition=True, language="en", second=True)["result"][1]
+    assert "Sung once more" in lyrics
+    reason = "the language model gave no answer: out of memory"
+    assert mended["said"] == [[("notice", transcribe.MEND_LEFT_OUT.format(reason=reason))]]
+
+
+def test_whisper_hearing_nothing_leaves_the_words_as_heard(mended):
+    mended["whisper"] = lambda text: ""
+    lyrics = run(recognition=True, language="en", second=True)["result"][1]
+    assert "Sung once more" in lyrics and mended["chosen"] == []
+    assert mended["said"] == [[("notice", transcribe.MEND_LEFT_OUT.format(reason="Whisper heard no words"))]]
+
+
+def test_a_new_seed_asks_the_choice_again_and_the_same_seed_does_not(mended):
+    run(recognition=True, language="en", second=True, seed=1)
+    run(recognition=True, language="en", second=True, seed=1)
+    run(recognition=True, language="en", second=True, seed=2)
+    assert [seed for _asked, seed, _sampling in mended["chosen"]] == [1, 2]
+
+
+def test_whisper_with_downloading_off_is_refused_with_the_links(mended, monkeypatch):
+    def refused(settings, progress=None):
+        raise FileNotFoundError("Whisper large-v3 turbo ... is not on this machine yet.")
+
+    monkeypatch.setattr(download, "ensure_whisper", refused)
+    with pytest.raises(ValueError, match="Whisper large-v3 turbo"):
+        run(recognition=True, language="en", second=True)
+
+
+def test_the_layout_after_a_choice_asks_for_the_same_context_so_the_model_is_loaded_once(mended, monkeypatch):
+    from yue2_comfy import llm
+
+    asked = []
+    choosing = llm.run
+
+    def counted(path, messages, seed, n_ctx, device, *args, **kwargs):
+        asked.append(n_ctx)
+        return choosing(path, messages, seed, n_ctx, device, *args, **kwargs)
+
+    monkeypatch.setattr(llm, "run", counted)
+    run(recognition=True, language="en", second=True)
+    assert len(asked) == 2 and asked[0] == asked[1]
+    chosen = asked[0]
+    asked.clear()
+    run(recognition=True, language="en", seed=5)
+    assert len(asked) == 1 and asked[0] < chosen
