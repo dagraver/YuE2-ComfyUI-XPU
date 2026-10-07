@@ -109,6 +109,18 @@ def _major(device):
         return None
 
 
+def old_card(device) -> bool:
+    """Whether ``device`` is a CUDA card older than Ampere (RTX 30 series): an RTX 20, a GTX 16 or before.
+
+    Such a card has no bfloat16 in hardware and none of torch's fused attention
+    kernels take bfloat16 on it, which is what the acoustic stage asks
+    about; see ``runtime.fused_attention``. False for the processor and for a
+    machine that cannot say.
+    """
+    major = _major(device)
+    return major is not None and major < 8
+
+
 def engine_for(name: str, device, dtype=None):
     """The engine for ``name`` on ``device``, None for upstream's own call; ValueError when it cannot run here.
 

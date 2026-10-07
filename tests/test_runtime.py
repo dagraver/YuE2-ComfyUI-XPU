@@ -35,6 +35,22 @@ class Fake:
         return wider
 
 
+class Typed(Fake):
+    """A Fake with a dtype that can be cast, which the float16 path of an old card reads."""
+
+    def __init__(self, shape, device="cuda", dtype=None):
+        super().__init__(shape, device)
+        self.dtype = dtype
+
+    def repeat_interleave(self, groups, dim=1):
+        wider = Typed((self.shape[0], self.shape[1] * groups) + self.shape[2:], self.device.type, self.dtype)
+        wider.repeats = (groups, dim)
+        return wider
+
+    def to(self, dtype):
+        return Typed(self.shape, self.device.type, dtype)
+
+
 def trio(heads=16, kv_heads=8, tokens=4, dim=128, device="cuda"):
     return (Fake((tokens, heads, dim), device),
             Fake((tokens, kv_heads, dim), device),
@@ -168,6 +184,125 @@ def test_other_errors_are_not_taken_for_a_refusal(monkeypatch):
     assert not runtime._REFUSED
 
 
+def test_the_song_graph_runs_once_right_after_it_is_recorded(monkeypatch):
+    """A recording let go of before it ever ran broke the next one; see ``runtime.launched``.
+
+    The replay comes after upstream's recording, and the positions it moved
+    are set back, so the first real step finds them where upstream left them.
+    """
+    cuda_graph = pytest.importorskip("yue2_comfy.vendor.yue2.cuda_graph")
+    events = []
+
+    class Recorded:
+        def replay(self):
+            events.append("replay")
+
+    class Positions:
+        def copy_(self, other):
+            events.append("positions set back to " + other)
+
+    class Upstream:
+        def __init__(self, *args, **kwargs):
+            self.device = "cpu"
+            self.graph = None
+            self.positions = Positions()
+            self.initial_positions = "the prompt's end"
+
+        def _capture(self):
+            events.append("recorded")
+            self.graph = "a new graph"
+
+    monkeypatch.setattr(runtime, "guarded_graph", Recorded)
+    monkeypatch.setattr(cuda_graph, "GraphAR", Upstream)
+    with runtime.pinned_attention("sdpa"):
+        graph = cuda_graph.GraphAR()
+        graph._capture()
+    assert events == ["recorded", "replay", "positions set back to the prompt's end"]
+
+
+def _on_card(monkeypatch, old):
+    """The card at 'cuda:0' taken for one older than Ampere, or for a newer one."""
+    from yue2_comfy import attention
+
+    monkeypatch.setattr(attention, "old_card", lambda device: old and device == "cuda:0")
+
+
+def test_on_an_old_card_the_stage_runs_in_float16_without_asking_cudnn(monkeypatch):
+    """cuDNN does not run below Ampere and the efficient kernel takes no bfloat16 there.
+
+    So the call is widened straight away, cast to float16, cut into query blocks
+    in case math takes it after all, and answered in the dtype it came in; the
+    stage around it is under float16 autocast.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch.nn.attention")
+    nar = pytest.importorskip("yue2_comfy.vendor.yue2.nar")
+    _on_card(monkeypatch, True)
+    monkeypatch.setattr(runtime, "_REFUSED", set())
+    calls = []
+
+    def recorder(q, k, v, **kwargs):
+        calls.append(dict(q=q, k=k, v=v, kwargs=kwargs, cudnn=torch.backends.cuda.cudnn_sdp_enabled(),
+                          autocast=torch.is_autocast_enabled()))
+        return Typed(q.shape, dtype=q.dtype)
+
+    q, k, v = (Typed(fake.shape, dtype=torch.bfloat16) for fake in trio())
+    with swapped(nar, recorder):
+        with runtime.fused_attention("cuda:0"):
+            answer = nar.attention(q, k, v, causal=True, backend="sdpa", query_chunk_size=None)
+        assert not torch.is_autocast_enabled()
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert not call["cudnn"]
+    assert call["k"].shape == call["v"].shape == (4, 16, 128)
+    assert call["q"].dtype == call["k"].dtype == call["v"].dtype == torch.float16
+    assert call["kwargs"] == {"causal": True, "backend": "sdpa", "query_chunk_size": runtime.QUERY_BLOCK}
+    assert call["autocast"] is torch.cuda.is_available()
+    assert answer.dtype == torch.bfloat16
+    assert not runtime._REFUSED
+
+
+def test_a_block_size_the_caller_chose_is_kept_on_an_old_card(monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch.nn.attention")
+    nar = pytest.importorskip("yue2_comfy.vendor.yue2.nar")
+    _on_card(monkeypatch, True)
+    seen = {}
+
+    def recorder(q, k, v, **kwargs):
+        seen.update(kwargs)
+        return Typed(q.shape, dtype=q.dtype)
+
+    q, k, v = (Typed(fake.shape, dtype=torch.bfloat16) for fake in trio())
+    with swapped(nar, recorder):
+        with runtime.fused_attention("cuda:0"):
+            nar.attention(q, k, v, causal=False, backend="sdpa", query_chunk_size=256)
+    assert seen["query_chunk_size"] == 256
+
+
+def test_a_newer_card_sings_as_before(monkeypatch):
+    """No autocast, no cast, no blocks: every seed a newer card sang comes back the same."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch.nn.attention")
+    nar = pytest.importorskip("yue2_comfy.vendor.yue2.nar")
+    _on_card(monkeypatch, False)
+    monkeypatch.setattr(runtime, "_REFUSED", set())
+    seen = {}
+
+    def recorder(q, k, v, **kwargs):
+        seen.update(q=q, kwargs=kwargs, autocast=torch.is_autocast_enabled())
+        return "attended"
+
+    q, k, v = trio()
+    with swapped(nar, recorder):
+        with runtime.fused_attention("cuda:0"):
+            assert nar.attention(q, k, v, causal=False, backend="sdpa", query_chunk_size=None) == "attended"
+    assert seen["q"] is q
+    assert seen["kwargs"] == {"causal": False, "backend": "sdpa", "query_chunk_size": None}
+    assert seen["autocast"] is False
+
+
 def test_the_ungrouped_call_reaches_upstream_as_it_is():
     nar = pytest.importorskip("yue2_comfy.vendor.yue2.nar")
     seen = {}
@@ -239,10 +374,15 @@ def test_the_ar_records_into_a_guarded_graph(monkeypatch):
     pytest.importorskip("torch")
     cuda_graph = pytest.importorskip("yue2_comfy.vendor.yue2.cuda_graph")
 
+    class Positions:
+        def copy_(self, other):
+            pass
+
     class Upstream:
         def __init__(self, *args, attention_backend="auto", **kwargs):
             self.attention_backend, self.device = attention_backend, "cpu"
             self.graph = None
+            self.positions, self.initial_positions = Positions(), None
 
         def _capture(self):
             self.graph = "a plain CUDAGraph"
@@ -250,10 +390,14 @@ def test_the_ar_records_into_a_guarded_graph(monkeypatch):
         def close(self):
             self.graph = None
 
+    class Guarded:
+        def replay(self):
+            pass
+
     made = []
 
     def guarded():
-        made.append(object())
+        made.append(Guarded())
         return made[-1]
 
     monkeypatch.setattr(cuda_graph, "GraphAR", Upstream)

@@ -271,8 +271,12 @@ class GraphStep:
     """
 
     def __init__(self, net: Network, static: dict, start: int):
-        """Recorded right after a prefill: the rehearsals write only position ``start``, which its first step writes again."""
-        from ..runtime import guarded_graph
+        """Recorded right after a prefill, then replayed once (``runtime.launched``).
+
+        The rehearsals and that replay write only position ``start``, which its
+        first step writes again.
+        """
+        from ..runtime import guarded_graph, launched
 
         device, dtype = net.device, net.dtype
         self.token = torch.zeros(1, 1, dtype=torch.long, device=device)
@@ -290,6 +294,7 @@ class GraphStep:
         self.graph = guarded_graph()
         with torch.cuda.graph(self.graph, capture_error_mode=CAPTURE_MODE):
             self.out = run()
+        launched(self.graph)
 
     def reset(self, start: int) -> None:
         """Ready for a decoding whose first ``start`` positions the cache already holds."""

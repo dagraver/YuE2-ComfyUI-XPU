@@ -7,6 +7,75 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.12.0 - 2026-10-07
+
+### Added
+
+- **The language a song is sung in, on `YuE2 Transcribe`** (`language`,
+  `auto` at first): a name or a code, and several with commas. Left to tell
+  the language itself, Qwen3-ASR wrote a Russian duet the pack sang down as an
+  English translation ("Look out the window, there's a rich light..."); told
+  the language, it cannot. A song in several languages is told the first one
+  the speech model knows that is not English: told English, it translated the
+  rest, while told Russian it left the English lines English, on three songs
+  the pack sang in both. A name that is no language is refused before the run;
+  one the speech model does not know, such as Ukrainian, is left for it to
+  tell, with a notice; and the node says when the language the speech model
+  names and the letters of its words disagree. The caption ends on the
+  language the words were heard in.
+- **A second hearing** (`second_hearing`, off at first): Whisper large-v3
+  turbo hears the words again, and the language model in `model` writes the
+  lyrics from both hearings, taking each word from whichever makes sense.
+  Measured on the node with Qwen3.6-27B Q5, the share of words wrong went from
+  0.152 to 0.094 on four real Russian songs and from 0.478 to 0.040 on three
+  Russian songs the pack sang -- one of them the speech model had written down
+  in English -- while English songs stayed about where they were, 0.091 and
+  0.086, and songs in two languages did not change. The answer is checked
+  before it is used and set aside, with the reason, when it runs much longer
+  or shorter than the hearings or brings in words neither has; the caption
+  says how many words came from Whisper. With `language` at `auto`, Whisper
+  also names the language from the whole song, and Qwen3-ASR hears the song
+  again when its words are not in it. It costs a 1.62 GB download (MIT) once
+  and 10 to 17 seconds a run on an RTX 5090, and the language model is loaded
+  once for both the choice and the layout. See
+  [YuE2 Transcribe](README.md#yue2-transcribe).
+- **Whisper, the pack's own implementation** (`yue2_comfy/whisper/`), in plain
+  torch, its decoding step replayed from a CUDA graph and checked against the
+  plain step as Qwen3-ASR's is. Checked against transformers 5.8: every thirty
+  seconds both decoded greedily from the same point gave the same tokens, 78
+  of 78, and fourteen songs took 8.9 s against 41.8. Unload Models releases
+  it, and with `low_vram` it takes turns with the speech model on the card.
+
+### Changed
+
+- **Template 8, *Cover a song*, hears the words twice:** `second_hearing` is
+  on, and its note says what that costs and where to turn it off.
+
+### Fixed
+
+- **The last stage on RTX 20 and GTX 16 cards** runs in FP16 now. In BF16,
+  which neither of torch's streaming attention kernels takes below Ampere,
+  its attention fell to one that builds the whole matrix: 15 minutes of a
+  99-second song on an RTX 2060 SUPER in one user's log, and a longer song
+  that never finished. In FP16 the streaming kernel takes it, and the card's
+  tensor cores do the multiplies. Measured on an RTX 5090 with the stage
+  forced down the same path, on five songs of 38 to 312 seconds, each against
+  the same stage in FP32: FP16 lay 40 to 45 dB from it, and the BF16 every
+  newer card sings 15 to 33 dB, so the older card now renders the more exact
+  of the two. `low_vram` works there too. Newer cards sing every seed as
+  before, to the bit. The speed on an RTX 20 card is not measured: there is
+  none here.
+- **A song cancelled as it started could bring ComfyUI down on the next
+  run.** Cancelled while its step was being recorded as a CUDA graph, about
+  a second into *Composing*, the next run stopped with "address returned by
+  cudaMallocAsync already exists in ptr_info", and ComfyUI died after it.
+  Under the cudaMallocAsync allocator, ComfyUI's default with CUDA 13, a
+  graph let go of before it has ever run gives its memory back while torch
+  still counts it as taken. Every graph the pack records -- YuE2's, Qwen3-ASR's
+  and Whisper's -- now runs once as soon as it is recorded. A stand that
+  cancelled at that moment failed the same way every time and now runs clean;
+  songs and recognised words come out the same to the bit.
+
 ## 0.11.0 - 2026-09-29
 
 ### Added

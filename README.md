@@ -127,9 +127,9 @@ reports are just as welcome, and so are songs that came out wrong: they go in
 
 | Resource | Requirement |
 |---|---|
-| GPU | An NVIDIA RTX 30 series (Ampere) or newer. RTX 20 and GTX 16 cards have no BF16 in hardware: they sing, but the last stage is many times slower -- 15 minutes of a 99-second song on an RTX 2060 SUPER in one user's log -- and `fast` and `flash` do not run on them. CPU works and is roughly an hour per song |
-| VRAM | **~4.4 GiB** for a 40-second song and **~4.5 GiB** for a four-minute one, with only the half of the model each stage needs on the card, or **~3.1 GiB** for either with `low_vram` on. A card with room to spare keeps the whole model on it and uses about 10 GiB for either. See `offload` in [YuE2 Options](#yue2-options). `YuE2 Transcribe` peaks at 1.9 GiB, and at 5.5 GiB while it recognises the words of a four-minute song, 3.5 with `low_vram`. Separating the voice, with `vocals_only` or `YuE2 Vocals Only`, peaks at 2.5 GiB. An edit in `YuE2 Edit Track` peaks no higher than singing the song did |
-| Disk | **7.26 GB**, as one file or as three. The INT8 build is 3.69 GB. `YuE2 Write Song` adds 2.55 GB unless you already have a GGUF, plus 32 MB of llama.cpp binaries if `llama-cpp-python` is not installed. `YuE2 Transcribe` adds 1.29 GB, and 3.80 GB more once it recognises words. `vocals_only`, `YuE2 Vocals Only` and `YuE2 Edit Track` add 0.85 GB, and new words in `YuE2 Edit Track` 1.84 GB for the word aligner and the 3.80 GB speech model. Songs the pack remembers take up to 4 GiB in ComfyUI's user folder, 8 with their sounds kept |
+| GPU | An NVIDIA RTX 30 series (Ampere) or newer. RTX 20 and GTX 16 cards have no BF16 in hardware, so the last stage runs in FP16 on them, which renders as exactly as BF16 or more so; how fast it is there is not measured yet, and `fast` and `flash` do not run on them. CPU works and is roughly an hour per song |
+| VRAM | **~4.4 GiB** for a 40-second song and **~4.5 GiB** for a four-minute one, with only the half of the model each stage needs on the card, or **~3.1 GiB** for either with `low_vram` on. A card with room to spare keeps the whole model on it and uses about 10 GiB for either. See `offload` in [YuE2 Options](#yue2-options). `YuE2 Transcribe` peaks at 1.9 GiB, and at 5.5 GiB while it recognises the words of a four-minute song, 3.5 with `low_vram`; Whisper, which hears them a second time, at 1.7 GiB. Separating the voice, with `vocals_only` or `YuE2 Vocals Only`, peaks at 2.5 GiB. An edit in `YuE2 Edit Track` peaks no higher than singing the song did |
+| Disk | **7.26 GB**, as one file or as three. The INT8 build is 3.69 GB. `YuE2 Write Song` adds 2.55 GB unless you already have a GGUF, plus 32 MB of llama.cpp binaries if `llama-cpp-python` is not installed. `YuE2 Transcribe` adds 1.29 GB, 3.80 GB more once it recognises words, and 1.62 GB for a second hearing. `vocals_only`, `YuE2 Vocals Only` and `YuE2 Edit Track` add 0.85 GB, and new words in `YuE2 Edit Track` 1.84 GB for the word aligner and the 3.80 GB speech model. Songs the pack remembers take up to 4 GiB in ComfyUI's user folder, 8 with their sounds kept |
 | Packages | `tiktoken`, which ComfyUI does not ship. It is the only thing this pack adds; `requests`, which the downloader uses, is already in every ComfyUI install. `llama-cpp-python` is optional -- `YuE2 Write Song` uses it when it is there and official llama.cpp binaries when it is not |
 
 If `tiktoken` is missing the node says so, with the right pip line for the
@@ -165,7 +165,7 @@ bypassed on open, and there is no second branch to mute before pressing Run.
 | 5 | **Four scores, one song** -- four takes on the same words, chosen by ear | the YuE2 weights |
 | 6 | **One take, both decoders** -- one performance decoded twice | the YuE2 weights and the 0.53 GB legacy decoder |
 | 7 | **Sing a MIDI file** -- a tune you have as MIDI, sung in the style you describe | the YuE2 weights |
-| 8 | **Cover a song** -- a recording's tune and words, sung again in another style | the YuE2 weights, SheetSage2 (1.29 GB), and for the words Qwen3-ASR (3.8 GB) and a 2.55 GB writer |
+| 8 | **Cover a song** -- a recording's tune and words, sung again in another style | the YuE2 weights, SheetSage2 (1.29 GB), and for the words Qwen3-ASR (3.8 GB), Whisper (1.62 GB) and a 2.55 GB writer |
 | 9 | **An a cappella song** -- a song with nothing but the voice | the YuE2 weights and the 0.85 GB voice separator |
 | 10 | **A song with LoRA** -- the same song node with adapters in front of it | the YuE2 weights and a LoRA of your own |
 | 11 | **Edit a song** -- a song, then part of it sung again, cut, moved or carried on | the YuE2 weights and the 0.85 GB voice separator; for new words the 1.84 GB aligner and Qwen3-ASR (3.8 GB) |
@@ -727,8 +727,9 @@ something to reset.*
   reuses the transcription, so the chords cost no listening.
 - `lyrics_auto_recognition` -- off at first. Turned on, the sung words are
   recognised and laid out under the section tags, as described below.
-- `model` -- the language model that breaks recognised words into lines, from
-  the same list as on `YuE2 Write Song`. `auto` downloads the writer's 2.55 GB
+- `model` -- the language model that breaks recognised words into lines, and
+  with `second_hearing` on first chooses between the two hearings, from the
+  same list as on `YuE2 Write Song`. `auto` downloads the writer's 2.55 GB
   model when the machine has none, and the node says so. It is used only with
   recognition on.
 - `seed` -- changes only how the recognised words are broken into lines. It is
@@ -744,6 +745,13 @@ something to reset.*
   carried across the seams. `a minute at a time` hands it a minute and lets
   every minute hear the beat for itself; it is what to reach for when a cover
   does not sit in the beat, and it is not free. See **The beat** below.
+- `language` -- the language the song is sung in, in English or as a code,
+  `Russian` or `ru`, and several with commas for a song in more than one.
+  `auto`, the default, lets the speech model tell, and it can be wrong. See
+  **The language** below. Used only with recognition on.
+- `second_hearing` -- off at first. Turned on, Whisper hears the words again
+  and the language model in `model` takes each word from whichever hearing
+  makes sense. See **A second hearing** below. Used only with recognition on.
 
 **A cover** is three wires: `score_abc` into the `score_abc` of
 `YuE2 Generate Song`, `lyrics` into its `lyrics`, and a `YuE2 Options` with
@@ -810,10 +818,68 @@ track, 0.19 to 0.34, which is why the whole song comes first. The line layout
 was kept in 62 of 66 sections with the writer's 4B model and in all 66 with a
 27B one.
 
+**The language.** Left to name the language itself, the speech model can take a
+Russian song for English and write it down translated: a duet the pack sang
+came back as "Look out the window, there's a rich light...". Named in
+`language`, it cannot. For a song in several languages it is told the first
+one it knows that is not English, because told English it translated
+everything else, while told Russian it left the English lines English --
+measured on three songs the pack sang in Russian and English. A song sung
+mostly in English with a chorus in another language may still keep that chorus
+translated. A name that is no language is refused before the run. One the
+speech model does not know, such as Ukrainian, is left for it to tell, with a
+notice, and a second hearing is told the language named. When the language
+the speech model names and the letters its words are written in disagree, the
+node says so.
+
+**A second hearing.** With `second_hearing` on, Whisper large-v3 turbo hears
+the song again, told the same language, and the language model in `model`
+writes the lyrics from both hearings, taking each word from whichever makes
+sense. Its answer is checked before it is used: one more than 15 percent
+longer than the longer hearing, more than 10 percent shorter than the shorter
+one, or with more than 8 percent of its words in neither, is set aside, the
+words stay Qwen3-ASR's, and the node says why. The node's caption says how many
+words came from Whisper.
+
+With `language` at `auto`, Whisper decides the language as well, from every
+thirty seconds of the song rather than from the first: a song that opens on an
+instrumental is heard right. When Qwen3-ASR's words are not in that language,
+it hears the song again told it, which is what brings a song written down as a
+translation back to its own words.
+
+Measured on the node, with Qwen3.6-27B Q5 as `model`, as the share of words
+wrong against the published or the sung lyrics, three seeds of the choice
+averaged:
+
+| Songs | Off | On |
+|---|---|---|
+| Four real Russian songs | 0.152 | 0.094 |
+| Three Russian songs the pack sang | 0.478 | 0.040 |
+| Three English songs the pack sang | 0.091 | 0.086 |
+| Three songs the pack sang in Russian and English, `language` naming both | 0.237 | 0.237 |
+
+The second row holds the duet above: 1.237 off, written down in English, and
+0.021 on; the other two went from 0.099 to 0.049. On the songs in two
+languages the model took no word from Whisper, and the seed moved the
+numbers by a few words at most.
+
+It costs 1.62 GB of weights once and 10 to 17 seconds a run on an RTX 5090:
+Whisper hears a song in one or two seconds, and the rest is the language model
+choosing, which then lays the words out without loading again. The model decides
+how much is mended. With Qwen3.6-27B the real songs came to 0.094. Gemma 4
+26B-A4B, which runs only 4B of its weights for each word, took a run 11 seconds
+against the 27B's 28 once the recording had been heard, brought the real songs
+to 0.113 and the pack's Russian ones as far, 0.035, and had 4 of its 39 answers
+set aside where the 27B had none -- measured with a fine-tune of it at Q6_K. The
+writer's own 4B model mended about half as much as the 27B in an earlier
+measurement.
+
 **Nothing is heard twice.** A recording gives the same transcription and the
 same words whatever the seed or the mode, so both are kept for the last eight
 recordings: switching `mode`, editing or changing the seed costs no listening,
-and a new seed only lays the words out again. The models stay loaded only with
+and a new seed only lays the words out again. Whisper's words are kept the
+same way, so with `second_hearing` on a new seed asks the language model to
+choose again and hears nothing again. The models stay loaded only with
 `keep_model_loaded`, and Unload Models releases them.
 
 **The editors.** `Edit lyrics...` opens the [song editor](#the-song-editor) on
@@ -839,7 +905,10 @@ note F1 of 0.96 to 0.99 counted in beats, and on three real tracks covered with
 `cot` at `melody`, 95 to 97 percent of the melody's pitch order survived. Those
 are clean mixes; on an arbitrary recording, expect the vocal F1 of 82.5 percent
 that the model card reports for RWC-Pop. Recognition runs its decoding step as a
-CUDA graph, and inside ComfyUI it heard a 190-second song in 5.2 s.
+CUDA graph, and inside ComfyUI it heard a 190-second song in 5.2 s. Whisper is
+the pack's own implementation too, checked against transformers 5.8: every
+thirty seconds both decoded greedily from the same point gave the same tokens,
+78 of 78, and fourteen songs took 8.9 s here and 41.8 s there.
 
 ### YuE2 Load MIDI
 
@@ -1417,6 +1486,7 @@ are the ones a small card wants: `offload`, and `low_vram` under it.*
   model's 28 text layers in INT8 and runs its convolutions and the word
   aligner's 40 seconds at a time: on a four-minute song 3.5 GiB instead of 5.5
   for the speech model and 2.2 instead of 3.5 for the aligner, a fifth slower.
+  Whisper and the speech model then take turns on the card.
 
 ### Staged nodes
 
@@ -1612,20 +1682,23 @@ have none rather than a second requirement. The larger models of
 [the model list](#the-model-list) download the same way, when a run first picks
 one.
 
-`YuE2 Transcribe` has two models, fetched on first use with `download` at
-anything but `off`, the speech model only once `lyrics_auto_recognition` is on:
+`YuE2 Transcribe` has three models, fetched on first use with `download` at
+anything but `off`: the speech model only once `lyrics_auto_recognition` is on,
+and Whisper only once `second_hearing` is on as well:
 
 | File | Size | Repository | Licence |
 | --- | --- | --- | --- |
 | `audio_encoders/sheetsage2_bf16.safetensors` | 1.29 GB | [Comfy-Org/YuE2](https://huggingface.co/Comfy-Org/YuE2) | CC BY-NC 4.0 |
 | `YuE2/Qwen3-ASR-1.7B/model.safetensors` | 3.80 GB | [Qwen/Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) | Apache-2.0 |
 | `YuE2/Qwen3-ASR-1.7B/tokenizer.json`, `config.json` | 11 MB | [Qwen/Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf) | Apache-2.0 |
+| `YuE2/whisper-large-v3-turbo/model.safetensors`, `tokenizer.json`, `generation_config.json` | 1.62 GB | [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | MIT |
 
 SheetSage2 goes into ComfyUI's `models/audio_encoders`, the folder Comfy-Org's
 repository puts it in and ComfyUI's own audio encoder loader reads. A copy
 already on disk is used where it lies: SheetSage2 is recognised by its tensors
-whatever the file is called, and the speech model by the shape of its weights
-next to its `tokenizer.json`.
+whatever the file is called, the speech model by the shape of its weights
+next to its `tokenizer.json`, and Whisper by the size of its weights next to
+its two files.
 
 `vocals_only` and `YuE2 Vocals Only` share one model, fetched on first use with
 `download` at anything but `off`:
@@ -1782,10 +1855,11 @@ trusts. Nothing is skipped: the certificate is still verified.
 
 ## Licence
 
-The code here is Apache-2.0, the SheetSage2, Qwen3-ASR, Qwen3-ForcedAligner
-and Mel-Band RoFormer implementations included. The YuE2 and SheetSage2 weights
-are CC BY-NC 4.0, which is non-commercial, and the vendored upstream inference
-code keeps its own licence. The writer's default language model, the Qwen3-ASR
-speech model and the Qwen3-ForcedAligner word aligner are Apache-2.0, the voice
-separator's weights are MIT, and they belong to neither.
+The code here is Apache-2.0, the SheetSage2, Qwen3-ASR, Qwen3-ForcedAligner,
+Whisper and Mel-Band RoFormer implementations included. The YuE2 and SheetSage2
+weights are CC BY-NC 4.0, which is non-commercial, and the vendored upstream
+inference code keeps its own licence. The writer's default language model, the
+Qwen3-ASR speech model and the Qwen3-ForcedAligner word aligner are Apache-2.0,
+Whisper's weights and the voice separator's are MIT, and they belong to
+neither.
 See [NOTICE.md](NOTICE.md).

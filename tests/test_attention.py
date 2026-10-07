@@ -83,6 +83,15 @@ def test_from_ampere_on_fast_runs_and_no_card_is_not_refused(monkeypatch):
         assert attention.engine_for("fast", "cuda").name == "fast"
 
 
+def test_an_old_card_is_any_cuda_card_before_ampere(monkeypatch):
+    """The card the acoustic stage runs in float16 on; see ``runtime.fused_attention``."""
+    for major, old in ((6, True), (7, True), (8, False), (12, False)):
+        monkeypatch.setattr(attention, "_major", lambda device, major=major: major)
+        assert attention.old_card("cuda") is old
+    monkeypatch.setattr(attention, "_major", lambda device: None)
+    assert attention.old_card("cpu") is False
+
+
 def test_the_card_is_asked_only_of_cuda():
     assert attention._major("cpu") is None
     assert attention._major("no such device") is None

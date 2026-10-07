@@ -375,7 +375,7 @@ def sing(models, style, lyrics, seed, settings, abc_ids=None, abc="",
             )
 
         def synthesize(mode):
-            with placement.acoustic(models, mode), runtime.fused_attention():
+            with placement.acoustic(models, mode), runtime.fused_attention(models.device):
                 return nar.synthesize(
                     models.lm, prefix, codec, request.seed, steps=int(settings["ode_steps"]),
                     context=CONTEXT, attention="sdpa", cancelled=cancelled,

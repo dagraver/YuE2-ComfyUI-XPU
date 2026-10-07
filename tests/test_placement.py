@@ -233,6 +233,38 @@ def test_the_acoustic_stage_replaces_the_offload_upstream_would_do_itself():
     assert (nar.CachedNAR, nar._offload_ar) == (engine, offload)
 
 
+def test_on_an_old_card_the_acoustic_stage_asks_for_more_room(monkeypatch):
+    """There the stage runs in float16 under autocast and holds HALF_WORK times the work."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from yue2_comfy import attention
+    from yue2_comfy.vendor.yue2 import nar
+
+    class Engine:
+        def __init__(self, model, chunk, *args, **kwargs):
+            pass
+
+    class Stand:
+        lm = object()
+        device = "cuda:0"
+
+    class Chunk:
+        ar_tokens = [0] * 2197
+        noise = [0] * 1000
+
+    asked = {False: [], True: []}
+    monkeypatch.setattr(nar, "CachedNAR", Engine)
+    for old in (False, True):
+        monkeypatch.setattr(attention, "old_card", lambda device, old=old: old)
+        monkeypatch.setattr(p, "arrange", lambda models, half, work, stage, mode=None, old=old: asked[old].append(work))
+        with p.acoustic(Stand()):
+            nar.CachedNAR(Stand.lm, Chunk())
+            with nar._offload_ar(Stand.lm, False):
+                pass
+    assert asked[False] == [p.prefill_bytes(2197), p.solve_bytes(2197, 1000)]
+    assert asked[True] == [int(work * p.HALF_WORK) for work in asked[False]]
+
+
 def _tiny(torch):
     """A model laid out the way ``groups`` reads one, a few kilobytes of it."""
     hidden = 8

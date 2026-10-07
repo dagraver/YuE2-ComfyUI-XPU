@@ -685,7 +685,7 @@ def repaint(models, prefix, codec, noise, known, held, steps: int, progress=None
             _report(progress, band, position * steps + done, total)
 
         def solve(mode, chunk=chunk, low=low, high=high, on_step=on_step):
-            with placement.acoustic(models, mode), runtime.fused_attention():
+            with placement.acoustic(models, mode), runtime.fused_attention(models.device):
                 engine = nar.CachedNAR(models.lm, chunk, "sdpa", None)
                 try:
                     with nar._offload_ar(models.lm, False):
