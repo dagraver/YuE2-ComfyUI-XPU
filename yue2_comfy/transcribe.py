@@ -26,6 +26,12 @@ that keeps the words as heard (see ``asr.layout``). Transcription and
 recognition are kept per recording, so a new seed only lays the words out
 again.
 
+'language' names the language the song is sung in. Left at 'auto', the
+speech model tells it, and a wrong guess can come out as a whole song
+translated; named, the language is told to every pass over the song (see
+``told_language`` for several, and ``languages`` for what may be written).
+The node's caption ends with the language the words were heard in.
+
 The score and lyrics editors sit on this node as they do on the song node, and
 an edit is kept for the recording it was made on; an edit with no mark,
 written before the node ever ran, is output as it is, the way the song node
@@ -39,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from . import edits
+from . import edits, languages
 from .constants import CATEGORY, OPTIONS_TYPE, WRITER_AUTO
 from .progress import Band, NodeProgress, announce, interrupted, refuse, translate_interrupt
 from .staged import resolve
@@ -98,6 +104,12 @@ SCORE_EDIT_TOOLTIP = (
     "transcription.\n\n'Edit score...' fills it after a run. The edit belongs to the recording "
     "and the mode it was made for: with another recording the node transcribes anew and says so. "
     "A score pasted before any run carries no recording and is output as it is."
+)
+LANGUAGE_TOOLTIP = (
+    "The language the song is sung in, in English or as a code: 'Russian' or 'ru'. Several are separated by "
+    "commas. Used only with 'lyrics_auto_recognition' on.\n\n"
+    "'auto' lets the speech model tell, and it can be wrong: a song it takes for another language may come "
+    "out translated. Name the language when the recognised words are not in it."
 )
 LYRICS_EDIT_TOOLTIP = (
     "The edited lyrics kept on this node. Empty at first, which means the lyrics output is the "
@@ -158,6 +170,13 @@ TEMPO_HEARD_MINUTE = (
     "in the beat. Its melody, chords and sections are still worth having. This recording was "
     "already heard a minute at a time, which is the shortest window there is here, so its "
     "beat is beyond the transcriber."
+)
+LANGUAGE_DOUBT = (
+    "The speech model took the song for {label}, yet wrote its words in {script} letters. If the song is not "
+    "sung in {label}, write its language in 'language' and run the node again."
+)
+LANGUAGE_UNKNOWN = (
+    "Qwen3-ASR does not know {name}, so it told the language itself and heard the song as {label}."
 )
 CANNOT_HEAR = "SheetSage2 could not transcribe this recording: {reason}."
 CANNOT_RECOGNISE = "Qwen3-ASR could not hear this recording: {reason}."
@@ -229,6 +248,49 @@ def _listen_mark(choice: str):
     return None if choice == LISTEN_CHOICES[0] else choice
 
 
+def told_language(named) -> str:
+    """The one language Qwen3-ASR is told for the languages the field names, or "" to let it tell.
+
+    One language is told as it is, when the model knows it. Of several, the
+    first one it knows that is not English is told, and English only when it
+    is the only one: told English, the model writes every other language as an
+    English translation, while told another language it still writes the
+    English it hears in English. Measured on 2026-10-01 on three songs the pack
+    sang in Russian and English (WER, auto -> told Russian): Russian verses
+    with an English chorus 0.557 -> 0.076, Russian and English lines taking
+    turns 0.611 -> 0.028. English verses with a Russian chorus stayed
+    translated either way (0.633 -> 0.608), and hearing each section on its own
+    in its language mended that song but broke the lines taking turns (0.458),
+    so it is not done.
+    """
+    known = [languages.qwen_name(name) for name in named if languages.qwen_name(name)]
+    if len(named) == 1:
+        return known[0] if known else ""
+    others = [name for name in known if name != "English"]
+    return others[0] if others else ""
+
+
+def _language_findings(named, told: str, words: dict) -> list:
+    """What the node says about the language the words were heard in.
+
+    Named but unknown to the speech model, the language was its own guess,
+    and the node says so. Left to it, a guess whose letters are not the ones
+    the words came out in -- "English" over Cyrillic words -- is a sign the
+    song is in another language, and the node points at the field.
+    """
+    label = words.get("language") or ""
+    if named and not told:
+        unknown = ", ".join(name for name in named if not languages.qwen_name(name))
+        return [("notice", LANGUAGE_UNKNOWN.format(name=unknown, label=label or "no language"))]
+    if named:
+        return []
+    expected = languages.script_of_language(languages.known(label)) if label else ""
+    written = languages.script_of(words.get("text", ""))
+    if expected and written and expected != written:
+        return [("notice", LANGUAGE_DOUBT.format(label=label, script=written))]
+    return []
+
+
 def _beat_findings(track, score: str, listen: str = LISTEN_CHOICES[0]) -> list:
     """A warning when the pulse of the recording is not the one the score was written on.
 
@@ -283,6 +345,7 @@ class YuE2Transcribe:
                 "score_abc": ("STRING", {"multiline": True, "default": "", "tooltip": SCORE_EDIT_TOOLTIP}),
                 "lyrics": ("STRING", {"multiline": True, "default": "", "tooltip": LYRICS_EDIT_TOOLTIP}),
                 "listen": (list(LISTEN_CHOICES), {"default": LISTEN_CHOICES[0], "tooltip": LISTEN_TOOLTIP}),
+                "language": ("STRING", {"default": languages.AUTO, "tooltip": LANGUAGE_TOOLTIP}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -293,28 +356,39 @@ class YuE2Transcribe:
     CATEGORY = CATEGORY
 
     @classmethod
-    def VALIDATE_INPUTS(cls, model=WRITER_AUTO, lyrics_auto_recognition=False):
-        """The model is checked only when the words are recognised, which is the only time it runs.
+    def VALIDATE_INPUTS(cls, model=WRITER_AUTO, lyrics_auto_recognition=False, language=languages.AUTO):
+        """The model and the language are checked only when the words are recognised, the only time they are used.
 
         ComfyUI checks a list widget against its list unless this names the
         input; see ``YuE2WriteSong.VALIDATE_INPUTS`` for why a choice the list
-        no longer shows can still run. With recognition off the model is never
-        used, so a stale choice there does not stop the transcription.
+        no longer shows can still run. With recognition off neither is used,
+        so a stale choice or a misspelt language does not stop the
+        transcription.
         """
         from . import llm
 
         if lyrics_auto_recognition is not True:
             return True
+        try:
+            languages.parse(language)
+        except ValueError as error:
+            return str(error)
         return llm.known(model) or True
 
     def transcribe(self, audio, mode, lyrics_auto_recognition, model, seed, options=None,
-                   score_abc="", lyrics="", listen=LISTEN_CHOICES[0], unique_id=None):
+                   score_abc="", lyrics="", listen=LISTEN_CHOICES[0], language=languages.AUTO, unique_id=None):
         progress = NodeProgress(unique_id, title="YuE2 Transcribe")
         settings = resolve(options)
         if mode not in MODE_CHOICES:
             refuse(unique_id, "'mode' must be one of {}.".format(", ".join(MODE_CHOICES)))
         if listen not in LISTEN_CHOICES:
             refuse(unique_id, "'listen' must be one of {}.".format(", ".join(LISTEN_CHOICES)))
+        named = ()
+        if lyrics_auto_recognition:
+            try:
+                named = languages.parse(language)
+            except ValueError as error:
+                refuse(unique_id, str(error))
         try:
             track = track_of(audio)
         except (ValueError, AttributeError, TypeError) as error:
@@ -352,9 +426,11 @@ class YuE2Transcribe:
 
         found = _sections(score)
         own = sections.skeleton(found)
+        heard_in = ""
         if lyrics_auto_recognition:
-            own = self._recognised(track, recording, heard, settings, model, seed, progress, unique_id,
-                                   findings) or own
+            recognised, heard_in = self._recognised(track, recording, heard, settings, model, seed, progress,
+                                                    unique_id, findings, named)
+            own = recognised or own
         kept_lyrics = edits.read(lyrics)
         if kept_lyrics.score and kept_lyrics.words in (None, recording):
             words_out = kept_lyrics.score
@@ -368,7 +444,10 @@ class YuE2Transcribe:
                                 for chosen in MODE_CHOICES}]}
         if written is not None:
             ui[edits.SCORE_UI] = [written]
-        progress.finish("{} sections, {:.0f} seconds".format(len(found), track["seconds"]))
+        summary = "{} sections, {:.0f} seconds".format(len(found), track["seconds"])
+        if heard_in:
+            summary += ", words heard in {}".format(heard_in)
+        progress.finish(summary)
         return {"ui": ui, "result": (score, words_out)}
 
     def _heard(self, track, recording, settings, progress, unique_id, listen) -> dict:
@@ -408,8 +487,13 @@ class YuE2Transcribe:
         except ValueError as error:
             refuse(unique_id, NO_SCORE.format(reason=str(error).rstrip(".")))
 
-    def _recognised(self, track, recording, heard, settings, model, seed, progress, unique_id, findings) -> str:
-        """The recognised words laid out under the section tags, or "" when none were heard."""
+    def _recognised(self, track, recording, heard, settings, model, seed, progress, unique_id, findings,
+                    named=()) -> tuple:
+        """The recognised words laid out under the section tags ("" when none were heard), and their language.
+
+        ``named`` is what the 'language' field names (``languages.parse``);
+        the speech model is told the one ``told_language`` picks from it.
+        """
         from . import devices, download
         from .asr import runtime as asr_runtime
         from .sheetsage import events, sections
@@ -423,11 +507,12 @@ class YuE2Transcribe:
             folder = download.ensure_asr(settings, band)
         except (FileNotFoundError, download.DownloadError) as error:
             refuse(unique_id, str(error))
+        told = told_language(named)
         try:
             words = asr_runtime.recognise(folder, devices.resolve(settings["device"]), track["samples"],
                                           track["rate"], timed, key=(recording, asr_runtime.stamp(folder)),
                                           progress=band, cancelled=interrupted,
-                                          low_vram=bool(settings.get("low_vram")))
+                                          low_vram=bool(settings.get("low_vram")), language=told)
         except InterruptedError:
             translate_interrupt()
             raise
@@ -436,18 +521,20 @@ class YuE2Transcribe:
         finally:
             if not settings["keep_model_loaded"]:
                 asr_runtime.unload()
+        language = words.get("language") or ""
         pieces = [{"tag": section["tag"], "text": part} for section, part in zip(timed, words["parts"])]
         wanted = sum(1 for piece in pieces if piece["text"].strip())
         if not wanted:
             findings.append(("notice", NO_WORDS))
-            return ""
-        answer = self._layout(pieces, words["language"], model, seed, settings, Band(progress, 0.8, 1.0), findings)
+            return "", language
+        findings.extend(_language_findings(named, told, words))
+        answer = self._layout(pieces, language, model, seed, settings, Band(progress, 0.8, 1.0), findings)
         from .asr import layout
 
         lyrics, kept = layout.lay_out(pieces, answer)
         if answer and kept < wanted:
             findings.append(("notice", LAYOUT_CHANGED.format(changed=wanted - kept, total=wanted)))
-        return lyrics
+        return lyrics, language
 
     def _layout(self, pieces, language, model, seed, settings, progress, findings) -> str:
         """The language model's answer for these words, kept per words, model and seed; "" when there is none."""

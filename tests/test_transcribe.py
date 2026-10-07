@@ -55,10 +55,10 @@ def node(monkeypatch):
 
 
 def run(mode="full", data=b"recording", score_abc="", lyrics="", recognition=False, count=1, seed=1,
-        listen=transcribe.LISTEN_CHOICES[0]):
+        listen=transcribe.LISTEN_CHOICES[0], language="auto"):
     return transcribe.YuE2Transcribe().transcribe(
         {"data": data, "count": count}, mode, recognition, "auto", seed, score_abc=score_abc, lyrics=lyrics,
-        listen=listen, unique_id="7")
+        listen=listen, language=language, unique_id="7")
 
 
 def faithful_answer(messages):
@@ -82,14 +82,15 @@ def heard(node, monkeypatch):
     calls.update(asr=0, llm=[], answer=faithful_answer)
 
     def fake_recognise(folder, device, waveform, rate, timed, key, progress=None, cancelled=None,
-                       low_vram=False):
+                       low_vram=False, language=""):
         calls["low_vram"] = low_vram
         calls["asr"] += 1
         calls["timed"] = timed
         calls["asr_key"] = key
+        calls["told"] = language
         parts = ["" if section["notes"] == 0 else "Words of the {}. Sung once more.".format(section["tag"].lower())
                  for section in timed]
-        return {"language": "English", "text": " ".join(part for part in parts if part), "parts": parts}
+        return {"language": language or "English", "text": " ".join(part for part in parts if part), "parts": parts}
 
     def fake_run(path, messages, seed, n_ctx, device, keep_loaded=False, progress=None, settings=None, **sampling):
         calls["llm"].append((path, seed, sampling.get("greedy")))
@@ -111,7 +112,8 @@ def test_the_widgets_sit_in_their_final_order():
     """ComfyUI restores saved widget values by position, so this order is a promise."""
     spec = transcribe.YuE2Transcribe.INPUT_TYPES()
     assert list(spec["required"]) == ["audio", "mode", "lyrics_auto_recognition", "model", "seed"]
-    assert list(spec["optional"]) == ["options", "score_abc", "lyrics", "listen"]
+    assert list(spec["optional"]) == ["options", "score_abc", "lyrics", "listen", "language"]
+    assert spec["optional"]["language"][1]["default"] == "auto"
     assert transcribe.YuE2Transcribe.RETURN_NAMES == ("score_abc", "lyrics")
     assert spec["required"]["lyrics_auto_recognition"][1]["default"] is False
     assert spec["required"]["seed"][1]["control_after_generate"] == "fixed"
@@ -527,3 +529,113 @@ def test_the_beat_warning_names_the_switch_that_answers_it():
     minute = transcribe._beat_findings(track, score, "a minute at a time")
     assert len(minute) == 1 and minute[0][0] == "warn"
     assert "'a minute at a time'" not in minute[0][1] and "already" in minute[0][1]
+
+
+@pytest.mark.parametrize("named, told", [
+    ((), ""),
+    (("Russian",), "Russian"),
+    (("English",), "English"),
+    (("Ukrainian",), ""),
+    (("Russian", "English"), "Russian"),
+    (("English", "Russian"), "Russian"),
+    (("English", "Spanish", "Russian"), "Spanish"),
+    (("Ukrainian", "English"), ""),
+    (("Ukrainian", "Russian", "English"), "Russian"),
+])
+def test_the_speech_model_is_never_told_english_over_another_language(named, told):
+    """Told English, it writes every other language as an English translation; see ``told_language``."""
+    assert transcribe.told_language(named) == told
+
+
+def test_a_named_language_is_told_to_recognition(heard):
+    run(recognition=True, language="ru")
+    assert heard["told"] == "Russian"
+    run(recognition=True, language="English, Russian")
+    assert heard["told"] == "Russian"
+    run(recognition=True)
+    assert heard["told"] == ""
+    assert heard["said"] == [[], [], []]
+
+
+def test_a_language_the_speech_model_does_not_know_is_its_own_guess_and_the_node_says_so(heard):
+    run(recognition=True, language="Ukrainian")
+    assert heard["told"] == ""
+    assert heard["said"] == [[("notice", transcribe.LANGUAGE_UNKNOWN.format(name="Ukrainian", label="English"))]]
+
+
+def test_a_misspelt_language_is_refused_only_when_the_words_are_recognised(heard):
+    with pytest.raises(ValueError, match="'Rusian'"):
+        run(recognition=True, language="Rusian")
+    assert heard["asr"] == 0
+    run(recognition=False, language="Rusian")
+    validate = transcribe.YuE2Transcribe.VALIDATE_INPUTS
+    assert validate(lyrics_auto_recognition=False, language="Rusian") is True
+    assert "'Rusian'" in validate(lyrics_auto_recognition=True, language="Rusian")
+    assert validate(lyrics_auto_recognition=True, language="Russian, en") is True
+
+
+def test_a_guess_whose_letters_are_another_languages_points_at_the_field(heard, monkeypatch):
+    from yue2_comfy.asr import runtime as asr_runtime
+
+    russian = "\u0413\u043e\u0440\u043e\u0434 \u0441\u043f\u0438\u0442 \u043f\u043e\u0434 \u0442\u0451\u043f\u043b\u044b\u043c \u0441\u043d\u0435\u0433\u043e\u043c."
+
+    def labelled_english(*args, **kwargs):
+        timed = kwargs.get("timed", args[4])
+        parts = [russian if section["notes"] else "" for section in timed]
+        return {"language": "English", "text": " ".join(part for part in parts if part), "parts": parts}
+
+    monkeypatch.setattr(asr_runtime, "recognise", labelled_english)
+    run(recognition=True)
+    doubt = ("notice", transcribe.LANGUAGE_DOUBT.format(label="English", script="Cyrillic"))
+    assert doubt in heard["said"][-1]
+    run(recognition=True, language="Russian")
+    assert doubt not in heard["said"][-1]
+
+
+def test_the_caption_ends_with_the_language_the_words_were_heard_in(heard, monkeypatch):
+    said = []
+
+    class Caption:
+        def __init__(self, node, title=None):
+            pass
+
+        def finish(self, message=None):
+            said.append(message)
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    monkeypatch.setattr(transcribe, "NodeProgress", Caption)
+    run(recognition=True, language="ru")
+    run()
+    assert said[0].endswith(", words heard in Russian") and "words heard" not in said[1]
+
+
+def test_recognition_tells_the_named_language_to_the_whole_song_and_every_section(monkeypatch):
+    from yue2_comfy.asr import runtime as asr_runtime
+
+    class Audio:
+        def numel(self):
+            return 16000 * 30
+
+        def __getitem__(self, cut):
+            return self
+
+    heard = []
+    fake_model = types.SimpleNamespace(
+        mono_16k=lambda waveform, rate: Audio(),
+        token_limit=lambda seconds: 400,
+        recognise=lambda net, tokenizer, audio, language="", cancelled=None, progress=None:
+            heard.append(language) or {"language": language or "English", "text": "la la. la la."})
+    monkeypatch.setitem(sys.modules, "yue2_comfy.asr.model", fake_model)
+    monkeypatch.setattr(sys.modules["yue2_comfy.asr"], "model", fake_model, raising=False)
+    monkeypatch.setattr(asr_runtime, "acquire",
+                        lambda folder, device, progress=None, low_vram=False: ("net", "tokenizer"))
+    monkeypatch.setattr(asr_runtime, "_RESULTS", asr_runtime.collections.OrderedDict())
+    timed = [{"start": 0.0, "end": 15.0, "notes": 12}, {"start": 15.0, "end": 30.0, "notes": 9}]
+    told = asr_runtime.recognise("f", "d", "samples", 44100, timed, key=("a", 1), language="Russian")
+    assert heard == ["Russian", "Russian", "Russian"] and told["language"] == "Russian"
+    asr_runtime.recognise("f", "d", "samples", 44100, timed, key=("a", 1), language="Russian")
+    assert len(heard) == 3, "the same recording and language is answered from what was kept"
+    left = asr_runtime.recognise("f", "d", "samples", 44100, timed, key=("a", 1))
+    assert heard[3:] == ["", "English", "English"] and left["language"] == "English"
