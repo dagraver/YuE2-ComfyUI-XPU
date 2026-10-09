@@ -7,6 +7,45 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.12.1 - 2026-10-09
+
+### Added
+
+- **Text on the node.** A user who rewrites lyrics dozens of times asked to
+  type them on the node, as on any other. A `Text on node` switch beside
+  `Edit song...` and `Edit lyrics...` shows text boxes instead of the summary:
+  ComfyUI's own `style` and `lyrics` boxes on `YuE2 Generate Song`,
+  `YuE2 Plan` and `YuE2 Plan Batch`, the lyrics growing with the node; on
+  `YuE2 Transcribe` and `YuE2 Load MIDI` a lyrics box that keeps what is
+  typed as Apply does, for the recording or file it was typed on, under a
+  line saying whether the node sends on its own lyrics or the edit. A box
+  whose input is wired stays hidden. The switch is off at first and kept in
+  the node's properties, not in a widget, so saved workflows do not change
+  and the widget values keep their places. Delete, Backspace and Ctrl+Z in a
+  box stay with the box.
+- **Windows that size and fill the tab.** The song editor, the score editor
+  and the track window are dragged larger or smaller from any edge or
+  corner, and a square button at the top right fills the browser tab. The
+  size is remembered for each kind of window, and no window shrinks below
+  what its content needs.
+- **The song editor opens as it was left.** `Edit as text` is remembered, so
+  lyrics edited again and again are one click away, and the text box takes
+  the window's whole height instead of sixteen lines. The style folds into
+  one line to give the lyrics more.
+- **The track window gives its height to the wave** once it has a height of
+  its own, and the words column beside it has a splitter that remembers its
+  width.
+
+### Fixed
+
+- **A token count that arrived after `Edit as text` was pressed** drew the
+  text box anew under the person typing: the caret jumped to the start, and
+  what was typed next landed there. The answer now repaints the count alone.
+- **The piano roll ran over the status line in a short browser window.** The
+  roll had a floor of its own while the part of the window holding it could
+  shrink to nothing, so the roll and its scroll bar covered "No changes...".
+  The floor now sits on the part that holds the roll.
+
 ## 0.12.0 - 2026-10-07
 
 ### Added

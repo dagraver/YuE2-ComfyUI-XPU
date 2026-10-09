@@ -3028,3 +3028,241 @@ def test_a_pack_window_is_a_modal_dialog_so_comfyui_keeps_its_keys_to_itself():
     assert 'panel.setAttribute("role", "dialog");' in made
     assert 'panel.setAttribute("aria-modal", "true");' in made
     assert "back.remove();" in made, "closing takes the dialog out of the page, and ComfyUI's keys come back"
+
+
+def test_a_window_asked_to_be_sizable_gets_grips_a_fill_button_and_keeps_its_size():
+    """M30.1: the lyrics editor was a fixed 920 px with a text box of about sixteen lines.
+
+    Eight grips sit on the panel's edges and corners, inside its padding, so no
+    content is under them. A drag grows the panel on both sides at once: it stays
+    centred where `frame` puts it, and the dragged edge stays under the pointer
+    because the size changes by twice the pointer's travel. The button in the top
+    right corner fills the browser tab (the owner's choice over the browser's own
+    full screen, which takes Escape for itself) and brings the size back.
+
+    Size and fill are kept per kind of window, so the editor opens as it was last
+    left on every node. A width or height nobody dragged is not written, and the
+    window's own stylesheet keeps deciding it. Storage throws in a private window;
+    the window must open there anyway, at its usual size. Only windows that ask
+    are sizable: a question box stays the size of its question.
+    """
+    source = (WEB / "yue2_controls.js").read_text(encoding="utf-8")
+    made = source.split("export function frame(")[1].split("\n}\n")[0]
+    assert made.startswith("{ onClose, sticky, size } = {})")
+    assert "if (size) sizable(panel, size);" in made
+    sizing = source.split("function sizable(panel, kind) {")[1].split("\n}\n")[0]
+    assert 'const GRIPS = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];' in source
+    assert "for (const side of GRIPS)" in sizing and "setPointerCapture" in sizing
+    assert 'side.includes("e") ? 2 : side.includes("w") ? -2 : 0' in sizing
+    assert 'side.includes("s") ? 2 : side.includes("n") ? -2 : 0' in sizing
+    assert "window.innerWidth - EDGE" in sizing and "window.innerHeight - EDGE" in sizing
+    assert '"lostpointercapture", end' in sizing and sizing.count("save()") >= 2
+    assert 'panel.classList.toggle("yue2-max", filled);' in sizing
+    assert "if (kept.w > 0)" in sizing and "if (kept.h > 0)" in sizing
+    for name in ("function rememberedSize(", "function rememberSize("):
+        body = source.split(name)[1].split("\n}\n")[0]
+        assert "localStorage" in body and "catch" in body, name
+    assert '"yue2.window." + kind' in source
+    assert ".yue2-panel.yue2-sized.yue2-max { width: calc(100vw - 16px) !important;" in source
+    for asked in ("export function confirmed(", "export function warned("):
+        assert "size" not in source.split(asked)[1].split("\n}\n")[0], asked
+    editor = (WEB / "yue2_editor.js").read_text(encoding="utf-8")
+    assert 'size: this.lyricsOnly ? "lyrics" : "song",' in editor
+
+
+def test_the_lyrics_editor_opens_as_text_when_it_was_left_as_text():
+    """M30.1: people who edit lyrics dozens of times pressed 'Edit as text' every time.
+
+    The mode is remembered for the browser, not per node, and only offered where
+    the lyrics are written in this window (a wire brings them otherwise). In text
+    mode the box fills what the window has left and the token count follows the
+    typing. A token answer used to redraw the lyrics card; with the editor now
+    opening straight into the text box, that would replace the box under the
+    person's fingers a moment after they start typing, so in text mode an answer
+    only repaints the count. 'Back to the transcription' keeps the mode it found.
+    """
+    source = (WEB / "yue2_editor.js").read_text(encoding="utf-8")
+    assert "this.asText = this.lyricsFree && remembered(TEXT_KEY);" in source
+    for name in ("function remembered(", "function remember("):
+        body = source.split(name)[1].split("\n}\n")[0]
+        assert "localStorage" in body and "catch" in body, name
+    toggle = source.split("    toggleText() {")[1].split("\n    }\n")[0]
+    assert "remember(TEXT_KEY, false);" in toggle and "remember(TEXT_KEY, true);" in toggle
+    tokens = source.split("    async fetchTokens() {")[1].split("\n    }\n")[0]
+    text_branch = tokens.split("if (this.asText) {")[1].split("}")[0]
+    assert "this.paintStatus(this.status)" in text_branch and "return;" in text_branch
+    assert tokens.index("if (this.asText) {") < tokens.index("this.renderLyrics()")
+    lyrics = source.split("    renderLyrics(keep) {")[1].split("\n    }\n")[0]
+    text_mode = lyrics.split("if (this.asText) {")[1].split("\n        }\n")[0]
+    assert 'area.className = "yue2-text-all";' in text_mode and "this.scheduleTokens();" in text_mode
+    assert 'scroller?.classList.toggle("yue2-textmode", this.asText && this.lyricsFree);' in lyrics
+    back = source.split("    async backToTags() {")[1].split("\n    }\n")[0]
+    assert "this.asText" not in back
+    assert ".yue2-panel textarea.yue2-text-all { flex: 1 1 auto; min-height: 0; resize: none; }" in source
+
+
+def test_the_style_folds_into_one_line_to_give_the_lyrics_the_window():
+    """M30.1: on Generate Song the style card takes half the window above the lyrics box.
+
+    Folded, the card is its title and the style line; a click on the line opens
+    it again. The choice is remembered like the text mode, and the lyrics-only
+    editor of Transcribe and Load MIDI has no style card to fold.
+    """
+    source = (WEB / "yue2_editor.js").read_text(encoding="utf-8")
+    assert "this.styleFolded = !this.lyricsOnly && remembered(FOLD_KEY);" in source
+    fold = source.split("    foldStyle(folded) {")[1].split("\n    }\n")[0]
+    assert "remember(FOLD_KEY, folded);" in fold and "this.renderStyle();" in fold
+    style = source.split("    renderStyle() {")[1].split("\n    }\n")[0]
+    folded = style.split("if (this.styleFolded) {")[1].split("\n        }\n")[0]
+    assert "this.foldStyle(false)" in folded and "return;" in folded
+    assert style.index("if (this.styleFolded) {") < style.index("if (!this.styleFree) {")
+
+
+def test_a_sized_window_never_cuts_its_own_content():
+    """M30: the score window's toolbars wrap as it narrows, and its body has a floor of its own.
+
+    A drag first grows the height to what the content needs (scrollHeight over
+    clientHeight), so the window stops shrinking where Apply would go under its
+    edge. When even the whole tab is too short for the content at that width,
+    the step is refused, so a narrowing drag stops at the narrowest width that
+    still fits. Whatever slips through anyway -- a tab with taller content
+    chosen after the drag, a smaller browser -- scrolls inside the panel rather
+    than being cut. The fill button takes no focus on a click, so the roll and
+    the lyrics box keep the keys they had.
+    """
+    source = (WEB / "yue2_controls.js").read_text(encoding="utf-8")
+    sizing = source.split("function sizable(panel, kind) {")[1].split("\n}\n")[0]
+    assert "max-height: calc(100vh - 16px); overflow: auto; }" in source
+    fit = sizing.split("    function fit() {")[1].split("\n    }\n")[0]
+    assert "panel.scrollHeight - panel.clientHeight" in fit and "window.innerHeight - EDGE" in fit
+    move = sizing.split("const move = (moved) => {")[1].split("\n        };\n")[0]
+    assert "over: overflowing()" in move
+    assert move.index("fit();") < move.index("if (!was.over && overflowing()) {")
+    refused = move.split("if (!was.over && overflowing()) {")[1].split("}")[0]
+    assert "panel.style.width = was.width;" in refused and "panel.style.height = was.height;" in refused
+    assert 'fill.addEventListener("mousedown", (event) => event.preventDefault());' in sizing
+
+
+def test_the_score_window_is_sizable_and_its_roll_cannot_spill_onto_the_status_line():
+    """M30: the second window asked for, after the lyrics editor.
+
+    The roll used to carry the 240 px floor while its body could shrink to
+    nothing, so a short window let the roll and its scroll bar run over the
+    status line: the panel itself never overflowed, and nothing could see it.
+    The floor now sits on the body, which the roll fills, so a window too short
+    for it overflows where the sizing guard sees it.
+    """
+    source = SCORE.read_text(encoding="utf-8")
+    assert 'frame({ sticky: true, size: "score", onClose: () => this.closed() });' in source
+    assert ".yue2-s-body { flex: 1 1 auto; min-height: 270px;" in source
+    assert ".yue2-s-roll { position: relative; flex: 1 1 auto; min-height: 0;" in source
+
+
+def test_text_on_the_node_is_a_switch_in_the_node_properties_and_off_by_default():
+    """M30.2: a pack user retypes lyrics dozens of times and wanted to do it on the node.
+
+    The owner chose a switch, off by default. It lives in the node's properties,
+    not in a widget: widgets_values are positional and a new value widget would
+    shift every saved file. Switched off, the property is deleted rather than set
+    to false, so a saved workflow is byte for byte what it was before. Song nodes
+    show ComfyUI's own style and lyrics boxes (the style one capped, the lyrics
+    one taking the room); a box whose input is wired stays hidden. The switch is
+    put last in the shared button row by CSS order, since the score editor
+    appends its buttons to the same row after this one. A graph undo or a reload
+    configures the node again, which is where the switch is read back.
+    """
+    source = (WEB / "yue2_editor.js").read_text(encoding="utf-8")
+    assert 'const TEXT_PROPERTY = "yue2_text_on_node";' in source
+    assert "return node?.properties?.[TEXT_PROPERTY] === true;" in source
+    flip = source.split("function flipText(node) {")[1].split("\n}\n")[0]
+    assert "if (on) node.properties[TEXT_PROPERTY] = true;" in flip
+    assert "else delete node.properties[TEXT_PROPERTY];" in flip
+    assert "if (on) roomForText(node);" in flip and "graphChanged();" in flip
+    show = source.split("function showText(node) {")[1].split("\n}\n")[0]
+    assert "const style = on && !sourceOf(node, STYLE);" in show
+    assert "const lyrics = on && !sourceOf(node, LYRICS);" in show
+    assert "showWidget(node, SUMMARY_UI, !boxes);" in show
+    assert "styleBox.options.getMaxHeight = () => STYLE_BOX_H;" in source
+    assert ".addWidget(" not in source
+    assert ".yue2-buttons button.yue2-toggle { order: 1;" in source
+    for hook in ("nodeType.prototype.onConfigure = function () {",
+                 "nodeType.prototype.onConnectionsChange = function () {"):
+        assert "setTimeout(() => refresh(this), 0);" in source.split(hook)[1].split("\n        };\n")[0], hook
+
+
+def test_the_lyrics_typed_on_transcribe_are_kept_exactly_as_apply_keeps_them():
+    """M30.2: Transcribe and Load MIDI keep an edit with a mark naming its recording.
+
+    Their lyrics widget holds that marked text, so it is never shown raw: the
+    switch shows a field of the pack's own that reads the edit or the node's
+    own lyrics and writes through the same editValue call as the editor's
+    Apply, so typing the node's own words back keeps no edit at all. The field
+    is not refilled under a caret. Typing settles into one graph change after
+    a pause (and on leaving the field) instead of one per key, which is how a
+    native box behaves too; checked live on 8188 with a reload in between.
+    """
+    source = (WEB / "yue2_editor.js").read_text(encoding="utf-8")
+    apply = source.split("    apply() {")[1].split("\n    }\n")[0]
+    assert ("editValue(this.lyricsText(), this.node.__yue2Lyrics,\n"
+            "                    this.node.__yue2Track || this.keptWords)") in apply
+    field = source.split("function lyricsField(node) {")[1].split("\n}\n")[0]
+    assert "widget.value = editValue(area.value, node.__yue2Lyrics,\n" \
+           "            node.__yue2Track || splitMark(widget.value ?? \"\").words);" in field
+    assert "settle = setTimeout(saved, FIELD_SETTLE);" in field
+    assert 'area.addEventListener("change", saved);' in field
+    assert "panelWidget(node, FIELD_UI, holder, () => FIELD_H, true);" in field
+    fill = source.split("function fillField(node, box) {")[1].split("\n}\n")[0]
+    assert "document.activeElement === area" in fill
+    show = source.split("function showText(node) {")[1].split("\n}\n")[0]
+    owned = show.split("if (sourceTexts(node)) {")[1].split("} else {")[0]
+    assert "showWidget(node, FIELD_UI, boxes);" in owned and "LYRICS, " not in owned.replace("sourceOf(node, LYRICS)", "")
+
+
+def test_the_track_window_is_sizable_and_its_wave_takes_the_height_it_is_given():
+    """M30.3: the pack user spends most of their time in Edit Track and asked to stretch it.
+
+    The window sizes and fills the tab like the others. It used to be as tall
+    as its content, with a wave of 150-300 px and a body capped at 62vh, and it
+    still opens that way until it is given a height. A height of its own (a drag
+    that sets one, or filling the tab) marks the panel 'yue2-held', and then the
+    cap goes and the wave grows into all the height the window gained: measured
+    on 8188, a window 86 px taller gave the wave 325 px more, and the old fixed
+    wave put back stayed at 272 px. The canvas follows its box through the
+    ResizeObserver it already had.
+    """
+    track = (WEB / "yue2_track.js").read_text(encoding="utf-8")
+    assert 'frame({ sticky: true, size: "track", onClose: () => this.closed() });' in track
+    assert "    height: clamp(150px, 30vh, 300px);" in track
+    assert ".yue2-panel.yue2-track.yue2-held .yue2-t-body { max-height: none; }" in track
+    assert (".yue2-panel.yue2-track.yue2-held .yue2-t-canvas { flex: 1 1 auto; "
+            "min-height: clamp(150px, 30vh, 300px); }") in track
+    controls = (WEB / "yue2_controls.js").read_text(encoding="utf-8")
+    sizing = controls.split("function sizable(panel, kind) {")[1].split("\n}\n")[0]
+    assert ('const hold = () => panel.classList.toggle("yue2-held",\n'
+            '        Boolean(panel.style.height) || panel.classList.contains("yue2-max"));') in sizing
+    show = sizing.split("const show = (filled) => {")[1].split("\n    };\n")[0]
+    assert "hold();" in show
+    move = sizing.split("const move = (moved) => {")[1].split("\n        };\n")[0]
+    assert move.index("hold();") < move.index("fit();")
+    assert move.rstrip().endswith("hold();")
+
+
+def test_the_words_column_beside_the_wave_has_a_splitter_that_remembers():
+    """M30.3: the words column was a fixed 230 px.
+
+    A splitter between the wave and the words moves it; the width is kept for
+    the browser in try/catch like the window sizes, never squeezes the wave
+    under LEFT_LEAST, and a double click puts it back. A song without words
+    hides the splitter with the column.
+    """
+    track = (WEB / "yue2_track.js").read_text(encoding="utf-8")
+    assert 'const WORDS_KEY = "yue2.track.words";' in track
+    for name in ("function keptWordsWidth(", "function keepWordsWidth("):
+        body = track.split(name)[1].split("\n}\n")[0]
+        assert "localStorage" in body and "catch" in body, name
+    width = track.split("    wordsWidth(width, keep) {")[1].split("\n    }\n")[0]
+    assert "room - LEFT_LEAST" in width and "if (keep) keepWordsWidth(fitted);" in width
+    assert 'this.split.addEventListener("dblclick", () => this.wordsWidth(WORDS_W, true));' in track
+    assert "this.wordsWidth(keptWordsWidth(), false);" in track
+    words = track.split("    paintWords() {")[1].split("\n    }\n")[0]
+    assert words.count("this.split.hidden = ") == 2

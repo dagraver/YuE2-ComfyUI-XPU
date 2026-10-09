@@ -226,6 +226,12 @@ second -- between tokens during generation, between tiles during decoding.
 The button opens a window over the canvas, the style on top and the lyrics
 under it, and nothing is written to the node until Apply.
 
+`Text on node`, the switch beside it, puts ComfyUI's own style and lyrics boxes
+back on the node in place of the summary, for typing as on any other node: the
+lyrics box takes the room and grows when the node is dragged larger, and a box
+whose input is wired stays hidden. The switch is off at first and kept for each
+node in its properties rather than in a widget, so saved workflows do not change.
+
 ![The song editor over the canvas, titled Song -- YuE2 Generate Song, with the line Style and lyrics for this node. Nothing is written to it until Apply. Under STYLE: Language (not named); Tempo ticked, with a slider and 80 in the box beside it; an empty voice box showing its placeholder, expressive female voice, and a + Voice button; two sound parts, acoustic piano and synth pads, each with up, down and remove buttons, and under them an empty box reading city pop, tenor saxophone, no guitars... beside an Add button; an Examples list closed on Take a style that was really run..., with the note about where its lines come from under it; and the style line the model will read, acoustic piano, synth pads, 80 BPM. Under LYRICS: 400 tokens in the lyrics, the + Section and Edit as text buttons, the note about clicking a letter to flip its case, then a blue [Verse] and an orange [Chorus] of four Russian lines each, thin marks under the letters where the tokenizer cuts, and a token count at the end of every line](docs/song_editor.png)
 
 *A Russian song over piano and pads. The style line under the parts is the
@@ -268,6 +274,13 @@ rather than filling it in.*
   a tag with nothing selected. Rows of lyrics copied from the window come out
   as the model reads them, with a section's tag when its chip is selected, and
   without the buttons and token counts drawn beside them.
+- **Room.** The pack's editor windows -- this one, the score editor and the
+  track window -- are dragged larger or smaller from any edge or corner, and
+  the square at the top right fills the browser tab, so a larger browser means
+  a larger editor. The size is remembered for each kind of window. `Edit as
+  text` is remembered too: the editor opens on the text box when that is how it
+  was left, and the box takes all the height the window has. The arrow beside
+  `STYLE` folds the style into one line to give the lyrics more.
 
 ![The Examples list open over the song editor. At the top the row it drops from, Take a style that was really run...; then the group Covers and editing with Jazz-funk (English), Jazz ballad (Chinese), Chamber folk (Chinese), Brass funk (Chinese), Heavy metal (English), Christmas pop, Hard rock (English) under the pointer, Acoustic pop (Chinese), Vocal jazz (Chinese) and Swing jazz (Chinese); then the group Genre explorer with Ambient (Chinese), Bachata (English), Big Band (Chinese), Boogie Woogie (English), City Pop (Chinese), Country Gospel (English), Electropop (Chinese), Emo-Pop (English), Eurobeat (English), Folktronica (Russian), Glam Metal (English), Honky Tonk (English), Industrial Metal (Chinese), Jump Blues (English), Lo-Fi Hip Hop (Chinese), Nu-Disco (Chinese), Southern Gospel (English) and Yacht Rock (Japanese). Behind the list the Examples and Style line rows of the style card, and the LYRICS card below](docs/lyrics_examples.png)
 
@@ -284,7 +297,8 @@ pack is installed or updated before they appear. The window is in English only.
 `YuE2 Generate Song` and `YuE2 Render Plan` carry an `Edit score...` button and
 a summary of the score they will sing. The button opens a window over the
 canvas with three views of one score, and nothing is written to the node until
-Apply.
+Apply. Like the song editor's, the window is sized from its edges or fills the
+tab, and it never shrinks below what its toolbars need.
 
 <img src="docs/piano_roll.png" width="400" alt="The score editor over the canvas, titled Score -- YuE2 Generate Song, with the line The notes this node sings. Nothing is written to the node until Apply. On top the Piano roll, Notes and ABC tabs, and on the right Key Fm, 4/4, 98 BPM, 93 bars, 3:47, sung up to 0:30. Under them Play and From start, the voice box ticked with synth beside it, instrument ticked with piano, chords ticked with strings, a Tempo slider with 98 in the box next to it, and a Key list on Fm. On the row below, the Voice, Instrument, Chords and Both switch with Chords lit, an unticked repeats too box, an Eighth notes grid, Add bars..., the zoom buttons and Whole song, greyed-out Undo and Redo, then Copy, Cut, Paste and Duplicate with only Paste lit, and the greyed-out -oct, -1, +1 and +oct buttons. The roll shows bars 1 to 20, two intro sections and the start of a verse, with a dashed yellow line at bar 13 marked max_seconds 0:30. Every chord of the lane under the bar numbers stands on the roll as violet notes held until the next chord -- Fm, Ab, Cm, Fm7 and Bb -- with the root darker and named after the chord and the other notes named by pitch, C4, Ab3, Eb4, F4, D4 and Bb3 among them; the voice and the instrument are drawn faintly behind. Under the roll a scroll slider, the notice on the Chords part, the note on what YuE2 does with an edited melody, Back to the model's score and Save as MIDI... on the left, and Keep for new words ticked, Cancel and Apply on the right">
 
@@ -889,7 +903,10 @@ transcription. An edit belongs to the recording it was made on, and an edited
 score to its `mode` as well. Given another recording, the node leaves the edit
 out, outputs what it hears in the new one and says so; `Reset lyrics` and
 `Reset score` throw an edit away. Lyrics or a score written before the node ever
-ran carry no recording and are sent on as they are.
+ran carry no recording and are sent on as they are. `Text on node` shows the
+lyrics in a box on the node, for typing without the window: what is typed is
+kept exactly as Apply keeps it, for this recording, and the line over the box
+says whether the node sends on its own lyrics or the edit.
 
 **Measured.** The transcriber is this pack's own implementation of SheetSage2,
 checked against ComfyUI master's: the same tokens and the same ABC to the byte
@@ -995,8 +1012,9 @@ for each paragraph; a paragraph sung twice is taken for the chorus. Russian
 files in Windows-1251 are read as Russian.
 
 **The editors.** As on `YuE2 Transcribe`: `Edit lyrics...` and `Edit score...`
-open the editors on what the file gave, and an edit belongs to the file it was
-made for -- an edited score to its `mode` and tracks as well.
+open the editors on what the file gave, `Text on node` shows the lyrics on the
+node, and an edit belongs to the file it was made for -- an edited score to its
+`mode` and tracks as well.
 
 **Measured.** Reading a file took 3 to 140 ms on the two files tried here, the
 GTA San Andreas intro and the Pirates of the Caribbean theme, both instrumental
@@ -1189,6 +1207,11 @@ same rule the node uses.*
 - `Undo last edit` takes the last edit off the list, and `Reset track` on the
   node clears it. What an edit was made on is still in memory, so neither
   sings anything.
+- **Room.** The window grows from its edges, or fills the browser tab with the
+  square at its top right. It opens as it always did until it is given a height
+  of its own, and then the wave takes all the height the window gains. The bar
+  between the wave and the words moves to give the words more room or less,
+  and a double click puts it back.
 
 #### What an edit can do
 

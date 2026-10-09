@@ -361,8 +361,8 @@ const SCORE_STYLE = `
     color: var(--descrip-text, #bbb); user-select: none; }
 .yue2-s-tempo input[type="range"] { width: 120px; margin: 0; accent-color: #3B7DD8; }
 .yue2-score input.yue2-s-bpm { width: 62px; padding: 4px 6px; text-align: right; }
-.yue2-s-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.yue2-s-roll { position: relative; flex: 1 1 auto; min-height: 240px; outline: none;
+.yue2-s-body { flex: 1 1 auto; min-height: 270px; display: flex; flex-direction: column; }
+.yue2-s-roll { position: relative; flex: 1 1 auto; min-height: 0; outline: none;
     border: 1px solid var(--border-color, #4e4e4e); border-radius: 6px; overflow: hidden; }
 .yue2-s-roll:focus { border-color: #3B7DD8; }
 .yue2-s-roll canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
@@ -882,7 +882,7 @@ class ScoreEditor {
     }
 
     build() {
-        const { panel, close, handle } = frame({ sticky: true, onClose: () => this.closed() });
+        const { panel, close, handle } = frame({ sticky: true, size: "score", onClose: () => this.closed() });
         panel.classList.add("yue2-score");
         this.panel = panel;
         this.close = close;

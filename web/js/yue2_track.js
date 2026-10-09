@@ -54,6 +54,10 @@ const SUMMARY_H = 50;
 const STRIP_H = 20;
 const RULER_H = 16;
 const WAVE_LEAST = 90;
+const WORDS_KEY = "yue2.track.words";
+const WORDS_W = 230;
+const WORDS_LEAST = 120;
+const LEFT_LEAST = 360;
 const MIN_BAR_PX = 6;
 const MIN_BEAT_PX = 8;
 const BAR_NUMBER_PX = 30;
@@ -164,6 +168,24 @@ const WORDS_HEARD =
 
 const WORDS_PICKED =
     "The stretch selected on the track is what is sung again, and these are the words it sings.";
+
+function keptWordsWidth() {
+    try {
+        const kept = Number(window.localStorage.getItem(WORDS_KEY));
+        return kept > 0 ? kept : WORDS_W;
+    } catch (error) {
+        void error;
+        return WORDS_W;
+    }
+}
+
+function keepWordsWidth(width) {
+    try {
+        window.localStorage.setItem(WORDS_KEY, String(Math.round(width)));
+    } catch (error) {
+        void error;
+    }
+}
 
 function typing(target) {
     const tag = target && target.tagName;
@@ -837,7 +859,7 @@ class TrackWindow {
     }
 
     build() {
-        const { panel, close, handle } = frame({ sticky: true, onClose: () => this.closed() });
+        const { panel, close, handle } = frame({ sticky: true, size: "track", onClose: () => this.closed() });
         panel.classList.add("yue2-track");
         this.panel = panel;
         this.close = close;
@@ -976,9 +998,15 @@ class TrackWindow {
         this.takesRow = element("div", "yue2-t-takes");
         left.appendChild(this.takesRow);
         body.appendChild(left);
+        this.split = element("div", "yue2-t-split");
+        this.split.title = "Drag to give the words more room or less. A double click puts it back.";
+        this.split.addEventListener("pointerdown", (event) => this.splitDown(event));
+        this.split.addEventListener("dblclick", () => this.wordsWidth(WORDS_W, true));
+        body.appendChild(this.split);
         this.words = element("div", "yue2-t-words");
         body.appendChild(this.words);
         panel.appendChild(body);
+        this.wordsWidth(keptWordsWidth(), false);
 
         this.status = element("div", "yue2-t-status");
         panel.appendChild(this.status);
@@ -1050,6 +1078,41 @@ class TrackWindow {
         this.observer = new ResizeObserver(() => this.resize());
         this.observer.observe(this.box);
         setTimeout(() => this.resize(), 0);
+    }
+
+    wordsWidth(width, keep) {
+        const room = this.words.parentElement?.getBoundingClientRect().width || 0;
+        const most = room > 0 ? Math.max(WORDS_LEAST, room - LEFT_LEAST) : Infinity;
+        const fitted = Math.round(Math.max(WORDS_LEAST, Math.min(most, width)));
+        this.words.style.flexBasis = fitted + "px";
+        if (keep) keepWordsWidth(fitted);
+    }
+
+    splitDown(event) {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const grip = this.split;
+        const start = event.clientX;
+        const from = this.words.getBoundingClientRect().width;
+        try {
+            grip.setPointerCapture(event.pointerId);
+        } catch (error) {
+            void error;
+        }
+        grip.classList.add("yue2-t-splitting");
+        const move = (moved) => this.wordsWidth(from - (moved.clientX - start), false);
+        const end = () => {
+            grip.removeEventListener("pointermove", move);
+            grip.removeEventListener("pointerup", end);
+            grip.removeEventListener("pointercancel", end);
+            grip.removeEventListener("lostpointercapture", end);
+            grip.classList.remove("yue2-t-splitting");
+            this.wordsWidth(this.words.getBoundingClientRect().width, true);
+        };
+        grip.addEventListener("pointermove", move);
+        grip.addEventListener("pointerup", end);
+        grip.addEventListener("pointercancel", end);
+        grip.addEventListener("lostpointercapture", end);
     }
 
     closed() {
@@ -1813,9 +1876,11 @@ class TrackWindow {
         this.goArea = null;
         if (!text.trim() && !this.going && !this.breaking) {
             this.words.hidden = true;
+            this.split.hidden = true;
             return;
         }
         this.words.hidden = false;
+        this.split.hidden = false;
         this.words.appendChild(element("div", "yue2-t-wordhead", "Words"));
         if (this.breaking) this.words.appendChild(this.breakBox());
         const raw = this.rawLines();
@@ -3469,11 +3534,18 @@ const STYLE = `
     height: clamp(150px, 30vh, 300px);
     border: 1px solid var(--border-color, #4e4e4e); border-radius: 6px; overflow: hidden; }
 .yue2-t-canvas canvas { position: absolute; inset: 0; touch-action: none; cursor: text; }
+.yue2-panel.yue2-track.yue2-held .yue2-t-body { max-height: none; }
+.yue2-panel.yue2-track.yue2-held .yue2-t-canvas { flex: 1 1 auto; min-height: clamp(150px, 30vh, 300px); }
+.yue2-t-split { flex: 0 0 10px; margin: 0 -10px; position: relative; cursor: col-resize;
+    touch-action: none; user-select: none; }
+.yue2-t-split::after { content: ""; position: absolute; top: 25%; bottom: 25%; left: 4px; width: 2px;
+    border-radius: 1px; background: rgba(255, 255, 255, 0.10); }
+.yue2-t-split:hover::after, .yue2-t-split.yue2-t-splitting::after { background: #3B7DD8; }
 .yue2-t-empty { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px;
     align-items: center; justify-content: center; text-align: center; padding: 14px;
     overflow: auto; font-size: 12px; line-height: 1.5; color: var(--descrip-text, #aaa); }
 .yue2-t-empty div { max-width: 620px; }
-.yue2-t-words { flex: 0 0 230px; min-height: 0; overflow: auto; font-size: 11px;
+.yue2-t-words { flex: 0 1 230px; min-width: 120px; min-height: 0; overflow: auto; font-size: 11px;
     line-height: 1.5;
     color: var(--descrip-text, #aaa); background: rgba(0, 0, 0, 0.14); border-radius: 6px;
     padding: 6px 10px; border: 1px solid var(--border-color, #4e4e4e); }

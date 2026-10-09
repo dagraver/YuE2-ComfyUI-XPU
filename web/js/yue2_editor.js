@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import {
-    ask, buttonRow, confirmed, element, frame, installStyle, panelWidget,
+    ask, buttonRow, confirmed, element, frame, graphChanged, installStyle, panelWidget,
     setWidgetValue, showWidget, sourceOf, textMenu, warned, widgetNamed,
 } from "./yue2_controls.js";
 import { editValue, splitMark } from "./yue2_roll.js";
@@ -17,6 +17,24 @@ const LYRICS = "lyrics";
 const TOKEN_ROUTE = "/yue2/tokens";
 const TOKEN_DELAY = 250;
 const SUMMARY_H = 58;
+const SUMMARY_UI = "yue2_song_summary";
+const FIELD_UI = "yue2_lyrics_text";
+const FIELD_H = 110;
+const STYLE_BOX_H = 72;
+const TEXT_ROOM = 200;
+const TEXT_W = 400;
+const FIELD_SETTLE = 500;
+const TEXT_PROPERTY = "yue2_text_on_node";
+const TEXT_KEY = "yue2.editor.text";
+const FOLD_KEY = "yue2.editor.styleFolded";
+
+const TEXT_LABEL = "Text on node";
+const TEXT_TOOLTIP =
+    "Type the style and lyrics in boxes on the node itself, instead of the summary. " +
+    "Edit song\u2026 still opens the editor.";
+const LYRICS_TEXT_TOOLTIP =
+    "Type the lyrics in a box on the node itself, instead of the summary. " +
+    "Edit lyrics\u2026 still opens the editor.";
 
 const EDIT_LABEL = "Edit song\u2026";
 const EDIT_TOOLTIP =
@@ -149,6 +167,16 @@ const EDITOR_STYLE = `
     text-transform: uppercase; color: var(--descrip-text, #999); display: flex;
     align-items: center; gap: 10px; }
 .yue2-card h4 .yue2-grow { flex: 1 1 auto; }
+.yue2-card.yue2-folded h4 { margin-bottom: 0; }
+.yue2-card h4 .yue2-fold-line { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; cursor: pointer; text-transform: none; letter-spacing: 0;
+    font-weight: 400; font-size: 12px; color: var(--input-text, #ddd);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.yue2-scroll.yue2-textmode { display: flex; flex-direction: column; }
+.yue2-scroll.yue2-textmode > .yue2-card { flex: 0 0 auto; }
+.yue2-scroll.yue2-textmode > .yue2-lyrics-card { flex: 1 0 auto; min-height: 340px; margin-bottom: 0;
+    display: flex; flex-direction: column; }
+.yue2-panel textarea.yue2-text-all { flex: 1 1 auto; min-height: 0; resize: none; }
 .yue2-grid { display: grid; grid-template-columns: 92px 1fr; gap: 8px 12px;
     align-items: center; }
 .yue2-label { font-size: 12px; color: var(--descrip-text, #999); }
@@ -281,6 +309,15 @@ const EDITOR_STYLE = `
 .yue2-hint + .yue2-hint { margin-top: 6px; }
 .yue2-hint.yue2-warn-hint { color: #E0A45A; }
 .yue2-buttons button[hidden] { display: none !important; }
+.yue2-buttons button.yue2-toggle { order: 1; flex: 0 0 auto; display: inline-flex; align-items: center;
+    gap: 6px; }
+.yue2-toggle .yue2-check { flex: 0 0 auto; width: 9px; height: 9px; box-sizing: border-box;
+    border: 1px solid currentColor; border-radius: 2px; }
+.yue2-toggle[aria-pressed="true"] .yue2-check { background: #3B7DD8; border-color: #3B7DD8; }
+.yue2-node-text { width: 100%; height: 100%; box-sizing: border-box; display: flex;
+    flex-direction: column; gap: 3px; font-family: system-ui, sans-serif; font-size: 11px;
+    line-height: 16px; color: var(--input-text, #ddd); }
+.yue2-node-text textarea { flex: 1 1 auto; min-height: 0; width: 100%; }
 `;
 
 let MENU = null;
@@ -332,6 +369,23 @@ function menuAt(button) {
     return [box.left, box.bottom + 2];
 }
 
+function remembered(key) {
+    try {
+        return window.localStorage.getItem(key) === "1";
+    } catch (error) {
+        void error;
+        return false;
+    }
+}
+
+function remember(key, on) {
+    try {
+        window.localStorage.setItem(key, on ? "1" : "0");
+    } catch (error) {
+        void error;
+    }
+}
+
 function iconButton(text, title, onClick) {
     const button = element("button", "yue2-icon", text);
     button.title = title;
@@ -365,7 +419,8 @@ class SongEditor {
         this.blocks = sheet.parseLyrics(this.lyricsRaw);
         this.lyricsDirty = false;
 
-        this.asText = false;
+        this.asText = this.lyricsFree && remembered(TEXT_KEY);
+        this.styleFolded = !this.lyricsOnly && remembered(FOLD_KEY);
         this.editing = null;
         this.tokens = null;
         this.sequence = 0;
@@ -391,6 +446,7 @@ class SongEditor {
     build() {
         const { panel, close, handle } = frame({
             sticky: true,
+            size: this.lyricsOnly ? "lyrics" : "song",
             onClose: () => {
                 this.closed = true;
                 clearTimeout(this.pending);
@@ -409,7 +465,7 @@ class SongEditor {
         const scroll = element("div", "yue2-scroll");
         panel.appendChild(scroll);
         this.styleCard = element("div", "yue2-card");
-        this.lyricsCard = element("div", "yue2-card");
+        this.lyricsCard = element("div", "yue2-card yue2-lyrics-card");
         if (this.lyricsOnly) scroll.append(this.lyricsCard);
         else scroll.append(this.styleCard, this.lyricsCard);
 
@@ -474,12 +530,34 @@ class SongEditor {
         this.scheduleTokens();
     }
 
+    foldStyle(folded) {
+        this.styleFolded = folded;
+        remember(FOLD_KEY, folded);
+        this.renderStyle();
+    }
+
     renderStyle() {
         const card = this.styleCard;
         card.replaceChildren();
+        card.classList.toggle("yue2-folded", this.styleFolded);
         const title = element("h4");
-        title.append(element("span", "", "Style"));
+        title.append(
+            iconButton(this.styleFolded ? "\u25B8" : "\u25BE",
+                this.styleFolded ? "Show the style's parts" : "Fold the style into one line, for more room for the lyrics",
+                () => this.foldStyle(!this.styleFolded)),
+            element("span", "", "Style"));
         card.appendChild(title);
+
+        if (this.styleFolded) {
+            const wired = !this.styleFree;
+            const shown = element("span", "yue2-fold-line", wired
+                ? "from '" + (sourceOf(this.node, STYLE)?.title || "another node") + "'"
+                : this.styleText() || "(no style)");
+            shown.title = wired ? "" : this.styleText();
+            shown.addEventListener("click", () => this.foldStyle(false));
+            title.appendChild(shown);
+            return;
+        }
 
         if (!this.styleFree) {
             card.appendChild(element("div", "yue2-hint",
@@ -747,6 +825,10 @@ class SongEditor {
         }
         if (this.closed || sequence !== this.sequence) return;
         this.tokens = found;
+        if (this.asText) {
+            if (this.status) this.paintStatus(this.status);
+            return;
+        }
         if (this.editing) this.stale = true;
         else this.renderLyrics();
     }
@@ -766,11 +848,13 @@ class SongEditor {
         const scroller = card.parentElement;
         const top = scroller?.scrollTop ?? 0;
         card.replaceChildren();
+        scroller?.classList.toggle("yue2-textmode", this.asText && this.lyricsFree);
         this.stale = false;
 
         const title = element("h4");
         title.append(element("span", "", "Lyrics"));
         const status = element("span", "yue2-tokens");
+        this.status = status;
         title.append(status, element("span", "yue2-grow"));
         card.appendChild(title);
 
@@ -807,17 +891,21 @@ class SongEditor {
 
         if (this.asText) {
             const area = document.createElement("textarea");
+            area.className = "yue2-text-all";
             area.value = this.lyricsText();
             area.spellcheck = false;
             area.addEventListener("input", () => {
                 this.lyricsRaw = area.value;
                 this.blocks = sheet.parseLyrics(area.value);
                 this.lyricsDirty = false;
+                this.scheduleTokens();
             });
             this.textArea = area;
             card.appendChild(area);
-            status.textContent = "";
-            area.focus();
+            this.paintStatus(status);
+            area.setSelectionRange(0, 0);
+            area.focus({ preventScroll: true });
+            area.scrollTop = 0;
             return;
         }
 
@@ -1065,8 +1153,6 @@ class SongEditor {
             && !(await confirmed("The words in this window have been changed since the last run.",
                 { title: "Load the last run's words?", ok: "Load them", cancel: "Keep these",
                   danger: true }))) return;
-        this.asText = false;
-        this.textArea = null;
         this.lyricsRaw = tags;
         this.blocks = sheet.parseLyrics(tags);
         this.lyricsDirty = false;
@@ -1086,11 +1172,13 @@ class SongEditor {
             }
             this.asText = false;
             this.textArea = null;
+            remember(TEXT_KEY, false);
             this.renderLyrics();
             this.scheduleTokens(0);
             return;
         }
         this.asText = true;
+        remember(TEXT_KEY, true);
         this.renderLyrics();
     }
 
@@ -1192,27 +1280,120 @@ function openEditor(node) {
     }
 }
 
+function textOnNode(node) {
+    return node?.properties?.[TEXT_PROPERTY] === true;
+}
+
+function fieldShown(node) {
+    return Boolean(node.__yue2Field) && !widgetNamed(node, FIELD_UI)?.hidden;
+}
+
+function showText(node) {
+    const on = textOnNode(node);
+    node.__yue2TextToggle?.setAttribute("aria-pressed", String(on));
+    let boxes = false;
+    if (sourceTexts(node)) {
+        boxes = on && !sourceOf(node, LYRICS);
+        showWidget(node, FIELD_UI, boxes);
+    } else {
+        const style = on && !sourceOf(node, STYLE);
+        const lyrics = on && !sourceOf(node, LYRICS);
+        showWidget(node, STYLE, style);
+        showWidget(node, LYRICS, lyrics);
+        boxes = style || lyrics;
+    }
+    showWidget(node, SUMMARY_UI, !boxes);
+    node.setDirtyCanvas?.(true, true);
+}
+
+function refresh(node) {
+    showText(node);
+    paintSummary(node);
+}
+
+function roomForText(node) {
+    const least = node.computeSize?.();
+    if (!least || !node.size) return;
+    node.setSize?.([Math.max(node.size[0], least[0], TEXT_W), Math.max(node.size[1], least[1] + TEXT_ROOM)]);
+}
+
+function flipText(node) {
+    node.properties = node.properties || {};
+    const on = !textOnNode(node);
+    if (on) node.properties[TEXT_PROPERTY] = true;
+    else delete node.properties[TEXT_PROPERTY];
+    refresh(node);
+    if (on) roomForText(node);
+    app.graph?.setDirtyCanvas?.(true, true);
+    graphChanged();
+}
+
+function fillField(node, box) {
+    const area = node.__yue2Field?.area;
+    if (!area || document.activeElement === area) return;
+    const shown = box.score || String(node.__yue2Lyrics || "");
+    if (area.value !== shown) area.value = shown;
+}
+
+function lyricsField(node) {
+    const holder = element("div", "yue2-node-text");
+    const state = element("div", "yue2-node-state");
+    const area = element("textarea", "comfy-multiline-input");
+    area.placeholder = LYRICS;
+    area.spellcheck = Boolean(app.extensionManager?.setting?.get?.("Comfy.TextareaWidget.Spellcheck"));
+    holder.append(state, area);
+    let settle = null;
+    const saved = () => {
+        clearTimeout(settle);
+        settle = null;
+        graphChanged();
+    };
+    area.addEventListener("input", () => {
+        const widget = widgetNamed(node, LYRICS);
+        if (!widget) return;
+        widget.value = editValue(area.value, node.__yue2Lyrics,
+            node.__yue2Track || splitMark(widget.value ?? "").words);
+        node.setDirtyCanvas?.(true, true);
+        paintSummary(node);
+        clearTimeout(settle);
+        settle = setTimeout(saved, FIELD_SETTLE);
+    });
+    area.addEventListener("change", saved);
+    area.addEventListener("wheel", (event) => {
+        const across = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+        if (!event.ctrlKey && !across && area.scrollHeight > area.clientHeight) {
+            event.stopPropagation();
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        app.canvas?.processMouseWheel?.(event);
+    });
+    node.__yue2Field = { state, area };
+    panelWidget(node, FIELD_UI, holder, () => FIELD_H, true);
+}
+
 function paintSummary(node) {
     const holder = node.__yue2Summary;
     if (!holder) return;
-    holder.replaceChildren();
     if (sourceTexts(node)) {
-        paintLyricsSummary(node, holder);
+        paintLyricsSummary(node);
         return;
     }
 
     const styleFrom = sourceOf(node, STYLE);
     const lyricsFrom = sourceOf(node, LYRICS);
+    if (node.__yue2Button) node.__yue2Button.disabled = Boolean(styleFrom && lyricsFrom);
+    if (widgetNamed(node, SUMMARY_UI)?.hidden) return;
+    holder.replaceChildren();
     if (styleFrom && lyricsFrom) {
         holder.append(
             line([dim("Style and lyrics come in through wires from")]),
             line([key(styleFrom.title === lyricsFrom.title ? styleFrom.title : styleFrom.title + " and " + lyricsFrom.title)]),
             line([dim("Edit them where they are written.")]),
         );
-        node.__yue2Button && (node.__yue2Button.disabled = true);
         return;
     }
-    node.__yue2Button && (node.__yue2Button.disabled = false);
 
     const facts = sheet.summarize(String(widgetNamed(node, STYLE)?.value ?? ""),
         String(widgetNamed(node, LYRICS)?.value ?? ""));
@@ -1265,8 +1446,11 @@ function hasSungLines(text) {
     return sheet.summarize("", String(text || "")).sung > 0;
 }
 
-function paintLyricsSummary(node, holder) {
+function paintLyricsSummary(node) {
     const texts = sourceTexts(node);
+    const field = fieldShown(node) ? node.__yue2Field : null;
+    const holder = field ? field.state : node.__yue2Summary;
+    holder.replaceChildren();
     const row = (...children) => {
         const made = element("div", "yue2-sum-row");
         made.append(...children);
@@ -1283,6 +1467,7 @@ function paintLyricsSummary(node, holder) {
         row(faint("Sent on as they arrive."));
         return;
     }
+    if (field) fillField(node, box);
     const track = node.__yue2Track || null;
     const shown = box.score || String(node.__yue2Lyrics || "");
     const facts = sheet.summarize("", shown);
@@ -1290,21 +1475,20 @@ function paintLyricsSummary(node, holder) {
     const count = named + ", " + facts.sung + (facts.sung === 1 ? " line" : " lines");
     if (box.score) {
         row(strong("Edited lyrics"), faint(" \u00B7 " + count));
-        row(box.words && track && box.words !== track
-            ? element("span", "yue2-sum-warn", texts.otherRow)
-            : faint("Sent on instead of the node's own lyrics."));
+        if (box.words && track && box.words !== track) row(element("span", "yue2-sum-warn", texts.otherRow));
+        else if (!field) row(faint("Sent on instead of the node's own lyrics."));
     } else if (facts.sung > 0) {
         row(strong(texts.wordsHeading), faint(" \u00b7 " + count));
-        row(faint(texts.wordsRow));
+        if (!field) row(faint(texts.wordsRow));
     } else if (shown) {
         row(strong("Section tags"), faint(" \u00B7 " + named + texts.tagsFound));
-        row(faint("Edit lyrics\u2026 to write the words under them."));
+        if (!field) row(faint("Edit lyrics\u2026 to write the words under them."));
     } else {
         row(strong("No section tags yet"));
         row(faint(texts.noTags));
         return;
     }
-    holder.appendChild(lyricsPreview(shown));
+    if (!field) holder.appendChild(lyricsPreview(shown));
 }
 
 async function resetLyrics(node) {
@@ -1324,14 +1508,20 @@ function install(node) {
     const { buttons } = buttonRow(node, "yue2_song_edit", lyricsOnly ? [
         { label: LYRICS_LABEL, tooltip: texts?.lyricsTooltip, onClick: () => openEditor(node) },
         { label: RESET_LYRICS_LABEL, tooltip: texts?.resetTooltip, onClick: () => resetLyrics(node) },
+        { label: TEXT_LABEL, tooltip: LYRICS_TEXT_TOOLTIP, onClick: () => flipText(node) },
     ] : [
         { label: EDIT_LABEL, tooltip: EDIT_TOOLTIP, onClick: () => openEditor(node) },
+        { label: TEXT_LABEL, tooltip: TEXT_TOOLTIP, onClick: () => flipText(node) },
     ]);
     node.__yue2Button = buttons[0];
     if (lyricsOnly) {
         node.__yue2ResetLyrics = buttons[1];
         buttons[1].hidden = true;
     }
+    const toggle = buttons[buttons.length - 1];
+    toggle.classList.add("yue2-toggle");
+    toggle.prepend(element("span", "yue2-check"));
+    node.__yue2TextToggle = toggle;
 
     const summary = element("div", "yue2-summary");
     summary.title = lyricsOnly ? "Click to open the lyrics editor" : "Click to open the song editor";
@@ -1339,10 +1529,16 @@ function install(node) {
         if (!node.__yue2Button?.disabled) openEditor(node);
     });
     node.__yue2Summary = summary;
-    panelWidget(node, "yue2_song_summary", summary, () => SUMMARY_H, true);
+    panelWidget(node, SUMMARY_UI, summary, () => SUMMARY_H, true);
+    if (lyricsOnly) lyricsField(node);
 
     showWidget(node, STYLE, false);
     showWidget(node, LYRICS, false);
+    const styleBox = lyricsOnly ? null : widgetNamed(node, STYLE);
+    if (styleBox) {
+        styleBox.options = styleBox.options || {};
+        styleBox.options.getMaxHeight = () => STYLE_BOX_H;
+    }
     unbindSockets(node);
 
     for (const name of [STYLE, LYRICS]) {
@@ -1355,7 +1551,7 @@ function install(node) {
             return result;
         };
     }
-    paintSummary(node);
+    refresh(node);
 }
 
 function unbindSockets(node) {
@@ -1436,7 +1632,7 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
             unbindSockets(this);
-            setTimeout(() => paintSummary(this), 0);
+            setTimeout(() => refresh(this), 0);
             return result;
         };
 
@@ -1456,7 +1652,7 @@ app.registerExtension({
         const onConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function () {
             const result = onConnectionsChange?.apply(this, arguments);
-            setTimeout(() => paintSummary(this), 0);
+            setTimeout(() => refresh(this), 0);
             return result;
         };
     },
