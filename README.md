@@ -300,15 +300,15 @@ canvas with three views of one score, and nothing is written to the node until
 Apply. Like the song editor's, the window is sized from its edges or fills the
 tab, and it never shrinks below what its toolbars need.
 
-<img src="docs/piano_roll.png" width="400" alt="The score editor over the canvas, titled Score -- YuE2 Generate Song, with the line The notes this node sings. Nothing is written to the node until Apply. On top the Piano roll, Notes and ABC tabs, and on the right Key Fm, 4/4, 98 BPM, 93 bars, 3:47, sung up to 0:30. Under them Play and From start, the voice box ticked with synth beside it, instrument ticked with piano, chords ticked with strings, a Tempo slider with 98 in the box next to it, and a Key list on Fm. On the row below, the Voice, Instrument, Chords and Both switch with Chords lit, an unticked repeats too box, an Eighth notes grid, Add bars..., the zoom buttons and Whole song, greyed-out Undo and Redo, then Copy, Cut, Paste and Duplicate with only Paste lit, and the greyed-out -oct, -1, +1 and +oct buttons. The roll shows bars 1 to 20, two intro sections and the start of a verse, with a dashed yellow line at bar 13 marked max_seconds 0:30. Every chord of the lane under the bar numbers stands on the roll as violet notes held until the next chord -- Fm, Ab, Cm, Fm7 and Bb -- with the root darker and named after the chord and the other notes named by pitch, C4, Ab3, Eb4, F4, D4 and Bb3 among them; the voice and the instrument are drawn faintly behind. Under the roll a scroll slider, the notice on the Chords part, the note on what YuE2 does with an edited melody, Back to the model's score and Save as MIDI... on the left, and Keep for new words ticked, Cancel and Apply on the right">
+<img src="docs/piano_roll.png" width="400" alt="The score editor over the canvas, titled Score -- YuE2 Generate Song, with the line The notes this node sings. Nothing is written to the node until Apply. On top the Piano roll, Notes and ABC tabs, and on the right Key Fm, 4/4, 98 BPM, 93 bars, 3:47 and, in amber, 23 of 33 lines fit. Under them Play and From start, the voice box ticked with synth beside it, instrument ticked with piano, chords ticked with strings, a Tempo slider with 98 in the box next to it, and a Key list on Fm. On the row below, the Voice, Instrument, Chords and Both switch with Voice lit, a ticked words box, an Eighth notes grid, Add bars..., the zoom buttons and Whole song, then Undo and Redo, Copy, Cut, Paste and Duplicate, and the -oct, -1, +1 and +oct buttons, all greyed out. The roll shows bars 72 to 79, the end of an interlude and a verse that starts at bar 72, with the chords Fm7 and Bb by turns and C7 at bar 79 on the lane under the bar numbers. The voice's notes are green and named where there is room -- Bb3, Ab3 and C4 in three phrases, then Ab4, Bb4 and C5 in a fourth, higher one -- with the instrument's notes faint behind them. Under each note stands a syllable of a Russian verse, on the row below the note or one row lower, the first syllable of each line bold and a word that goes on to the next note ending in a hyphen. The second and third lines are white; the first is amber, with a short amber dash under its last note, a C4 with no syllable; the fourth, the higher phrase, is amber as well. Under the roll a scroll slider, the line No changes. This is the score as it came in., the note on what YuE2 does with an edited melody, Back to the model's score and Save as MIDI... on the left, and Keep for new words ticked, Cancel and Apply on the right">
 
-*The window on `YuE2 Generate Song` with the `Chords` part picked: each chord of
-the lane stands on the roll as its notes, the root darker and named after the
-chord, held until the next one, with both sung parts faint behind. Beside the
-tempo is the key list; after Undo and Redo, the copy buttons, of which only
-Paste is lit, since something was copied and nothing is selected; beside Apply,
-`Keep for new words`. The dashed line at bar 13 is where `max_seconds` stops the
-singing.*
+*The window on `YuE2 Generate Song` with the `Voice` part picked and `words`
+ticked: four lines of a Russian verse under the voice's notes, a syllable a
+note, with the instrument's notes faint behind. The second and third lines have
+a note for every syllable and are white. The first is amber, and the dash under
+the C4 that ends it marks a note left without a syllable; the fourth is amber
+too. The facts at the top right count the whole song: `23 of 33 lines fit`.
+Beside the tempo is the key list, and beside Apply, `Keep for new words`.*
 
 On `YuE2 Generate Song` the score to edit is the one the node wrote on its last
 run, so run it once first. The next run sings the edit instead of writing a
@@ -468,6 +468,55 @@ The score's own words gave 0.97. Words changed within their lines cost nothing;
 a line added does, because the song keeps the edit's length -- the verse's lines
 move along its phrases, and the chorus after it lost its last line in every
 take read line by line. The Russian song was the lowest with every line new.
+
+**Words under the notes.** A score has notes and no words: which syllable lands
+on which note the model decides as it sings. The `words` box on the roll's
+toolbar, on at first and remembered in the browser, draws the lyrics under the
+voice's notes in order, a syllable a note: the sections of the lyrics on the
+sections of the score, and a section's lines cut where the tune rests. A
+syllable stands on the row under its note, or a row lower while the one before
+it is still running; the first syllable of a line is bold, and a word that goes
+on to another note ends in a hyphen. The words are drawn with the `Voice` part
+and in `Both`, and are hidden when the roll is zoomed far out.
+
+A line with as many notes as syllables is white. A line with more or fewer is
+amber: syllables left over stand together under the line's last note, and a
+note left without a syllable has a dash under it. The facts above the roll
+count the lines -- `words fit`, or `23 of 33 lines fit`, with the other lines,
+their syllables and their notes in the tooltip -- and the words are laid again
+after every edit, so a line that loses a note turns amber at once and fits
+again when the note is back. Amber means "look here", not "wrong": in the
+model's own scores a section sometimes ends a note or two past its words, and
+its last line is amber then. It is where to fit new words to an old tune, or a
+phrase to its line, before anything is sung.
+
+The lyrics are the ones the node will sing: on `YuE2 Generate Song` and
+`YuE2 Render Plan` those typed on the node or on the plan's node, and when they
+arrive through a wire, those of the last run, so run once first; on
+`YuE2 Transcribe` its lyrics or your edit of them; in `Notes...` of
+`YuE2 Edit Track` the song's own. A score that names no section, as
+`YuE2 Load MIDI` hands one on, is left without words and the facts say
+`words not shown`: its lyrics are laid along the tune when it is sung, on bars
+chosen then (see [Words on a MIDI tune](#words-on-a-midi-tune)).
+
+Measured before it was built, on 28 songs in English and Russian, with
+Qwen3-ForcedAligner hearing the separated voice a section at a time and a word
+counted only when a second hearing put it on the same note:
+
+| The line | Sung on the note it is drawn under | Within one note |
+|---|---|---|
+| As many notes as syllables, the model's own words | 84 to 92 in 100 | 99 |
+| As many notes as syllables, other words | 91 | 99 |
+| More syllables than notes | 65 | 85 |
+| Fewer syllables than notes | 57 | 85 |
+
+YuE2 writes a note for every syllable -- under its own words 154 lines of 184
+had exactly as many -- and sings a line that fits where the score puts it.
+Where a line does not fit, the model sings its own way: syllables left over run
+past the phrase, and with too few the next line can start early, by 3 to 9
+notes in one song. That cannot be told to the note, which is why such a line is
+marked rather than guessed at. Covers, rap and languages other than English and
+Russian were not measured.
 
 **Where the song ends.** The model writes a score for the whole song, and the
 singing stops at `max_seconds` wherever the score has got to by then; at `0` the
@@ -899,7 +948,8 @@ choose again and hears nothing again. The models stay loaded only with
 **The editors.** `Edit lyrics...` opens the [song editor](#the-song-editor) on
 the lyrics alone, starting from the section tags or the recognised words, and
 `Edit score...` opens the [score editor](#the-score-editor) on the
-transcription. An edit belongs to the recording it was made on, and an edited
+transcription, the lyrics drawn under its notes. An edit belongs to the
+recording it was made on, and an edited
 score to its `mode` as well. Given another recording, the node leaves the edit
 out, outputs what it hears in the new one and says so; `Reset lyrics` and
 `Reset score` throw an edit away. Lyrics or a score written before the node ever
@@ -1235,7 +1285,8 @@ same rule the node uses.*
   from Qwen3-ForcedAligner, and the take heard singing the most of the new
   words is kept. A pop line came back whole in both takes, a rap line with 8
   and 9 words of 10.
-- **Notes...** opens the [score editor](#the-score-editor) on the song. The
+- **Notes...** opens the [score editor](#the-score-editor) on the song, with
+  its words drawn under the notes. The
   bars whose notes changed are sung again, and changes far apart become edits
   of their own; the tempo, the bars, the key and the sections are fixed there.
   Four bars of new notes were sung 49 times in 50 in a pop song, 61 in 81 in a

@@ -7,6 +7,51 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.13.0 - 2026-10-12
+
+### Added
+
+- **Words under the notes.** A score has notes and no words: which syllable
+  lands on which note the model decides as it sings, and the score editor
+  could not show it. A `words` box on the roll's toolbar, on at first and
+  remembered in the browser, draws the lyrics under the voice's notes in
+  order, a syllable a note -- the sections of the lyrics on the sections of
+  the score, a section's lines cut where the tune rests. A syllable stands on
+  the row under its note, or a row lower while the one before it is still
+  running; the first syllable of a line is bold, and a word that goes on to
+  another note ends in a hyphen. A line with more or fewer syllables than
+  notes is drawn in amber, its left-over syllables together under its last
+  note and a dash under each note left without one, and the facts above the
+  roll count the lines: `words fit`, or `23 of 33 lines fit` with the others
+  named in the tooltip. The words are laid again after every edit of the
+  notes, after a run and when the lyrics on the node change, so a line can be
+  fitted to its phrase, or a phrase to its line, before anything is sung.
+  They are drawn in the windows of `YuE2 Generate Song`, `YuE2 Render Plan`
+  and `YuE2 Transcribe` and in `Notes...` of `YuE2 Edit Track`. Lyrics that
+  arrive through a wire are shown after one run. A score that names no
+  section, as `YuE2 Load MIDI` hands one on, is left without words: its
+  lyrics are laid along the tune only when it is sung. Nothing sung changes:
+  the words are a picture of the score and the lyrics, and every seed sings
+  as before. See [The score editor](README.md#the-score-editor).
+- **Measured before it was built,** on 28 songs, English and Russian, with
+  Qwen3-ForcedAligner hearing the separated voice a section at a time and a
+  word counted only when a second hearing put it on the same note. YuE2 writes
+  a note for every syllable: under its own words 154 lines of 184 had exactly
+  as many notes as syllables. On such lines the word was sung on the note it
+  is drawn under 92 times in 100 in the songs sung for the measurement, 84 in
+  songs the pack had kept and 91 under other words of the same length, and
+  within one note 99 in all three. On lines with syllables left over it was
+  65, and on lines with notes left over 57: there the model sings its own
+  way, which is why those lines are marked and not guessed at. Words drawn
+  from what was heard would not be better -- two hearings of one song agreed
+  on the note for 71 to 78 words in 100.
+- **Syllables cut for the drawing** (`yue2_comfy/syllables.py`): a word is
+  split into the pieces of its own letters that are sung -- Russian by its
+  vowels, English by rules for the silent e, `-ed` and `-es`, contractions
+  and the words songs shorten. 448 English song words counted by hand all
+  come out right. The count that lays lyrics along a MIDI tune is another one
+  and was left as it is.
+
 ## 0.12.1 - 2026-10-09
 
 ### Added

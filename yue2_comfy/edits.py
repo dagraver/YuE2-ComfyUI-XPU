@@ -64,6 +64,13 @@ AUTO_SECONDS_UI = "yue2_auto_seconds"
 The score editor draws where the singing stops. It counts the lines itself when
 the lyrics are on the canvas, and needs this when they came in through a wire."""
 
+SUNG_UI = "yue2_sung"
+"""Where the same node hands over the lyrics it was run with.
+
+The score editor draws the words under the notes (see ``underlay``). It reads
+them from the lyrics box when they are typed on the canvas, and needs this
+when they came in through a wire."""
+
 MARK_PREFIX = "%yue2-words "
 MARK_LINE = re.compile(r"%yue2-words ([0-9a-f]{16})( keep)?[ \t\r]*")
 KEEP = " keep"

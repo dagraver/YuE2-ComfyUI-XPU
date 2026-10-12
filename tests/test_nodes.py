@@ -266,7 +266,8 @@ def test_an_empty_box_writes_a_score_as_the_node_always_has(monkeypatch):
     assert said == []
     assert out["ui"] == {edits.SCORE_UI: [WRITTEN],
                          edits.WORDS_UI: [edits.mark("a style", "words", cot)],
-                         edits.AUTO_SECONDS_UI: [constants.auto_seconds("words")]}
+                         edits.AUTO_SECONDS_UI: [constants.auto_seconds("words")],
+                         edits.SUNG_UI: ["words"]}
     assert out["result"][1] == WRITTEN
 
 
@@ -278,7 +279,8 @@ def test_an_edit_for_these_words_is_sung_instead_of_writing_a_score(monkeypatch)
     assert calls == [{"edited": EDITED, "cot": cot}]
     assert said == []
     assert out["ui"] == {edits.WORDS_UI: [edits.mark("a style", "words", cot)],
-                         edits.AUTO_SECONDS_UI: [constants.auto_seconds("words")]}
+                         edits.AUTO_SECONDS_UI: [constants.auto_seconds("words")],
+                         edits.SUNG_UI: ["words"]}
     assert out["result"][1] == EDITED
 
 

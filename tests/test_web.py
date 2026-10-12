@@ -3266,3 +3266,169 @@ def test_the_words_column_beside_the_wave_has_a_splitter_that_remembers():
     assert "this.wordsWidth(keptWordsWidth(), false);" in track
     words = track.split("    paintWords() {")[1].split("\n    }\n")[0]
     assert words.count("this.split.hidden = ") == 2
+
+
+WORDS_SONG = (
+    'X:1\nT:\nM:4/4\nL:1/16\nQ:1/4=100\n'
+    'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"\n'
+    'V: Ins clef=treble name="Ins Melody" snm="Inst."\n'
+    'K:C\n% verse\nV: Vocal\nC2D2E2F2G2A2B2z2|C2D2E2F2G2A2B2z2|\nV: Ins\nZ2|\n')
+"""A verse of two phrases of seven notes, each closed by a rest."""
+
+BULLET = chr(0x2022)
+DASH = chr(0x2014)
+
+
+def laid_words(lyrics: str) -> dict:
+    from yue2_comfy import notation, underlay
+    return underlay.lay(notation.read(WORDS_SONG), lyrics)
+
+
+def test_the_words_under_the_notes_go_by_the_same_names_on_both_sides():
+    """M29: the window asks a route and reads a ui key that Python writes; a rename on one side draws no words."""
+    from yue2_comfy import edits, routes, underlay
+    score = (WEB / "yue2_score.js").read_text(encoding="utf-8")
+    assert 'const SUNG_UI = "{}";'.format(edits.SUNG_UI) in score
+    assert 'const UNDERLAY_ROUTE = "{}/score/words";'.format(routes.PREFIX) in score
+    assert '@routes.post(PREFIX + "/score/words")' in (ROOT / "yue2_comfy" / "routes.py").read_text(encoding="utf-8")
+    assert 'export const WORD_KINDS = ["{}", "{}", "{}"];'.format(
+        underlay.FIT, underlay.SPARE, underlay.CROWD) in ROLL.read_text(encoding="utf-8")
+    assert 'if (typeof sung === "string") this.__yue2Sung = sung;' in score
+
+
+def test_the_words_are_laid_again_whenever_the_notes_or_the_lyrics_may_have_changed():
+    """M29: a score read, an edit written, a run that brought new lyrics, and the tick of the box itself.
+
+    The lyrics are looked up on every asking, so words typed on the node
+    while the window is open are the ones laid under the next edit.
+    """
+    score = (WEB / "yue2_score.js").read_text(encoding="utf-8")
+    adopt = score.split('    adopt(sheet, fit = true, prefer = "Eighth notes") {')[1].split("\n    }\n")[0]
+    assert adopt.rstrip().endswith("this.layWords();")
+    write = score.split("    async write() {")[1].split("\n    }\n")[0]
+    assert "this.showDescription();\n            this.layWords();" in write
+    arrived = score.split("    scoreArrived(detail) {")[1].split("\n    }\n")[0]
+    assert "this.layWords();" in arrived
+    lay = score.split("    async layWords() {")[1].split("\n    }\n")[0]
+    assert "lyricsOf(this.track ? null : this.node, this.track)" in lay
+    assert "if (this.isClosed || sequence !== this.wordsSequence) return;" in lay
+    assert 'const SHOW_WORDS_KEY = "yue2.score.showWords";' in score
+    for name in ("function rememberedShowWords(", "function rememberShowWords("):
+        body = score.split(name)[1].split("\n}\n")[0]
+        assert "localStorage" in body and "catch" in body, name
+
+
+def test_the_notes_window_of_edit_track_is_given_the_songs_lyrics():
+    track = (WEB / "yue2_track.js").read_text(encoding="utf-8")
+    opened = track.split("this.notesEditor = openScoreFor(this.payload.score, {")[1].split("});")[0]
+    assert 'lyrics: String(this.payload.lyrics || ""),' in opened
+
+
+@needs_node
+def test_the_voices_notes_are_counted_in_the_order_python_counts_them():
+    """A syllable is drawn under the note Python numbered: by start, then by pitch, the model's own order left alone."""
+    notes = [{"id": 1, "start": 8, "pitch": 60}, {"id": 2, "start": 0, "pitch": 64},
+             {"id": 3, "start": 8, "pitch": 55}, {"id": 4, "start": 4, "pitch": 62}]
+    found = run_roll("const notes = {};\n"
+                     "console.log(JSON.stringify([r.inOrder(notes).map((n) => n.id), notes.map((n) => n.id), "
+                     "r.inOrder(null)]));".format(json.dumps(notes)))
+    assert found == [[2, 4, 3, 1], [1, 2, 3, 4], []]
+
+
+@needs_node
+def test_the_next_note_on_a_row_is_looked_for_a_few_notes_ahead():
+    pitches = [60, 62, 64, 59, 60, 67, 67, 67, 67, 67, 67, 67, 67, 67, 60]
+    notes = [{"start": index * 4, "pitch": pitch} for index, pitch in enumerate(pitches)]
+    found = run_roll("const notes = {};\n"
+                     "const at = (index, pitch, reach) => {{ const n = r.nextOn(notes, index, pitch, reach); "
+                     "return n ? n.start / 4 : null; }};\n"
+                     "console.log(JSON.stringify([at(0, 59), at(0, 60), at(0, 61), at(4, 60), at(4, 60, 20), "
+                     "at(14, 60), at(99, 60)]));".format(json.dumps(notes)))
+    assert found == [3, 4, None, None, 14, None, None]
+
+
+PLACED_VIEW = ("{ from: 0, to: 1000, room: 150, least: 9, x: (tick) => tick * 5, "
+               "width: (text) => text.length * 6 + 6 }")
+"""A roll five pixels a tick wide, with letters six pixels wide."""
+
+
+def placed(notes: list, words: list, view: str = PLACED_VIEW) -> list:
+    """``[text, row, left, width, clipped]`` for each word the roll would draw, rows counted down from the note."""
+    found = run_roll("const notes = {};\n"
+                     "console.log(JSON.stringify(r.wordPlaces(notes, {}, {}).map((p) => "
+                     "[p.text, notes[p.index].pitch - p.pitch, p.left, p.width, p.clipped])));"
+                     .format(json.dumps(notes), json.dumps(words), view))
+    return found
+
+
+@needs_node
+def test_a_word_goes_a_row_lower_while_the_word_before_it_is_still_running():
+    """Three quick notes on one pitch: the second word steps down a row, the third is back under its note."""
+    notes = [{"start": 0, "pitch": 65}, {"start": 4, "pitch": 65}, {"start": 8, "pitch": 65}]
+    words = [[0, 0, "Mor-"], [1, 0, "ning"], [2, 0, "breaks"]]
+    assert placed(notes, words) == [["Mor-", 1, 0, 30, False], ["ning", 2, 20, 30, False],
+                                    ["breaks", 1, 40, 42, False]]
+
+
+@needs_node
+def test_a_word_steps_past_a_note_that_stands_on_its_row():
+    """The next note a semitone down sits where the text would run: the row under that is free."""
+    notes = [{"start": 40, "pitch": 60}, {"start": 44, "pitch": 59}]
+    assert placed(notes, [[0, 0, "tomorrow"]]) == [["tomorrow", 2, 200, 54, False]]
+
+
+@needs_node
+def test_a_word_with_no_free_row_is_clipped_to_the_room_it_has_or_left_out():
+    notes = [{"start": 60, "pitch": 70}, {"start": 62, "pitch": 69}, {"start": 63, "pitch": 68}]
+    assert placed(notes, [[0, 0, "wonderful"]]) == [["wonderful", 2, 300, 13, True]]
+    tight = [{"start": 60, "pitch": 70}, {"start": 61, "pitch": 69}, {"start": 61, "pitch": 68}]
+    assert placed(tight, [[0, 0, "wonderful"]]) == []
+
+
+@needs_node
+def test_words_outside_the_view_are_not_placed_and_none_is_wider_than_its_room():
+    notes = [{"start": index * 40, "pitch": 60} for index in range(6)]
+    words = [[index, 0, "la"] for index in range(6)] + [[9, 0, "gone"]]
+    view = PLACED_VIEW.replace("from: 0, to: 1000", "from: 60, to: 130")
+    assert [row[2] for row in placed(notes, words, view)] == [400, 600]
+    long = placed(notes[:1], [[0, 0, "a" * 80]])
+    assert long == [["a" * 80, 1, 0, 150, False]]
+
+
+@needs_node
+def test_what_the_route_answers_is_what_the_window_draws():
+    payload = laid_words("[Verse]\nla la la la la la la\nna na na na na\n")
+    found = run_roll("const laid = r.wordsLaid({});\n"
+                     "console.log(JSON.stringify([laid.notes.length, laid.spare, laid.lines.map((l) => l.kind), "
+                     "laid.paired, laid.bare, laid.sung, r.wordsLaid(null), r.wordsLaid({{lines: []}}), "
+                     "r.wordsLaid({{lines: [{{kind: 'odd'}}], notes: []}}), "
+                     "r.wordsLaid({{lines: [], notes: [[0, 0, 'la'], 'x', [1, 2]]}}).notes]));"
+                     .format(json.dumps(payload)))
+    assert found == [12, [12, 13], ["fit", "spare"], True, False, 14, None, None, None, []]
+
+
+@needs_node
+def test_the_count_beside_the_facts_names_the_lines_that_do_not_fit():
+    fit = laid_words("[Verse]\nla la la la la la la\nna na na na na na na\n")
+    off = laid_words("[Verse]\nla la la la la la la\nna na na na na\n")
+    crowded = laid_words("[Verse]\nla la la la la la la la la\nna na na na na na na\n")
+    apart = laid_words("[Verse]\nla la la la la la la\n[Chorus]\nna na na na na na na\n[Bridge]\noh\n")
+    bare = laid_words("")
+    bare["bare"] = True
+    found = run_roll(
+        "const facts = (payload, problem) => r.wordsFacts(payload && r.wordsLaid(payload), problem);\n"
+        "console.log(JSON.stringify([facts({}), facts({}), facts({}), facts({}), facts({}), facts({}), "
+        "facts(null), facts(null, 'No lyrics yet.'), r.WORDS_FIT, r.WORDS_OFF, r.WORDS_UNPAIRED, r.WORDS_BARE, "
+        "r.WORDS_NONE]));".format(*[json.dumps(item) for item in (fit, off, crowded, apart, bare, laid_words(""))]))
+    whole, spare, crowd, unpaired, unnamed, none, nothing, problem = found[:8]
+    fits, differs, unpaired_text, bare_text, none_text = found[8:]
+    assert whole == {"text": "words fit", "title": fits, "warn": False}
+    assert spare["text"] == "1 of 2 lines fit" and spare["warn"]
+    assert spare["title"] == differs + "\n\n" + BULLET + " na na na na na " + DASH + " 5 syllables, 7 notes"
+    assert crowd["title"].endswith(BULLET + " la la la la la la la la la " + DASH + " 9 syllables, 7 notes")
+    assert unpaired["warn"] and unpaired["title"].endswith("\n\n" + unpaired_text)
+    assert unnamed == {"text": "words not shown", "title": bare_text, "warn": False}
+    assert none == {"text": "no words", "title": none_text, "warn": False}
+    assert nothing is None
+    assert problem == {"text": "words not shown", "title": "No lyrics yet.", "warn": False}
+

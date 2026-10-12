@@ -131,12 +131,14 @@ def test_the_plan_nodes_hand_their_score_to_the_score_editor(monkeypatch):
     cot = constants.DEFAULT_OPTIONS["cot"]
     assert written["ui"] == {staged.SCORE_UI: [SCORE],
                              staged.WORDS_UI: [edits.mark("a style", "words", cot)],
-                             staged.AUTO_SECONDS_UI: [constants.auto_seconds("words")]}
+                             staged.AUTO_SECONDS_UI: [constants.auto_seconds("words")],
+                             staged.SUNG_UI: ["words"]}
     plans = [{"score": "first"},
              {"score": "second", "style": "s", "lyrics": "l", "settings": {"cot": "melody"}}]
     assert staged.YuE2SelectPlan().select(plans, 1)["ui"] == {
         staged.SCORE_UI: ["second"], staged.WORDS_UI: [edits.mark("s", "l", "melody")],
-        staged.AUTO_SECONDS_UI: [constants.auto_seconds("l")]}
+        staged.AUTO_SECONDS_UI: [constants.auto_seconds("l")], staged.SUNG_UI: ["l"]}
+    assert staged.YuE2SelectPlan().select(plans, 0)["ui"][staged.SUNG_UI] == [""]
     assert staged.YuE2Plan.OUTPUT_NODE is True
     assert staged.YuE2SelectPlan.OUTPUT_NODE is True
     assert not getattr(staged.YuE2RenderPlan, "OUTPUT_NODE", False)

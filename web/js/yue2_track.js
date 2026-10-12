@@ -3382,6 +3382,7 @@ class TrackWindow {
         this.notesEditor = openScoreFor(this.payload.score, {
             title: this.node.title || "YuE2 Edit Track",
             focus,
+            lyrics: String(this.payload.lyrics || ""),
             apply: (score, changed) => this.notesChanged(score, changed, selection),
         });
     }

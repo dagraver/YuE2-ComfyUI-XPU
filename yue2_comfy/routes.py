@@ -179,6 +179,31 @@ def answer_score_transpose(body) -> tuple:
         return _score_problem(error), 200
 
 
+def answer_score_words(body) -> tuple:
+    """``(payload, status)`` for the score editor asking where the words of a song lie under its notes.
+
+    The answer is ``underlay.lay`` on the score as the roll draws it, so the
+    notes it counts are the ones in the window. A cut score is laid on its
+    whole groups, as an edit is written on them.
+    """
+    if not isinstance(body, dict) or not isinstance(body.get("abc"), str) \
+            or not isinstance(body.get("lyrics"), str):
+        return {"ok": False, "error": "Send a JSON object with the score as 'abc' and the "
+                                      "words as 'lyrics'."}, 400
+    if len(body["abc"]) + len(body["lyrics"]) > LONGEST:
+        return {"ok": False, "error": "That is far longer than any song."}, 413
+
+    from . import notation, underlay
+
+    try:
+        text, _cut = notation.editable(body["abc"])
+        laid = underlay.lay(notation.read(text), body["lyrics"])
+        laid["ok"] = True
+        return laid, 200
+    except Exception as error:  # noqa: BLE001 - the window shows what went wrong
+        return _score_problem(error), 200
+
+
 def answer_midi_tracks(body) -> tuple:
     """``(payload, status)`` for 'YuE2 Load MIDI' asking what a file in the input folder holds.
 
@@ -586,6 +611,12 @@ def register() -> None:
     async def score_transpose(request):
         """The whole score moved to another key, for the key list in the piano roll."""
         payload, status = await asyncio.to_thread(answer_score_transpose, await body_of(request))
+        return web.json_response(payload, status=status)
+
+    @routes.post(PREFIX + "/score/words")
+    async def score_words(request):
+        """The lyrics laid under the notes of a score, for the words in the piano roll."""
+        payload, status = await asyncio.to_thread(answer_score_words, await body_of(request))
         return web.json_response(payload, status=status)
 
     @routes.post(PREFIX + "/score/midi")

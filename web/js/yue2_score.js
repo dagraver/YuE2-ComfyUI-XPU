@@ -31,12 +31,14 @@ const WORDS_UI = "yue2_words";
 const TRACK_UI = "yue2_track";
 const MARKS_UI = "yue2_marks";
 const AUTO_SECONDS_UI = "yue2_auto_seconds";
+const SUNG_UI = "yue2_sung";
 const SCORE_EVENT = "yue2-score-written";
 const READ_ROUTE = "/yue2/score/read";
 const WRITE_ROUTE = "/yue2/score/write";
 const MIDI_ROUTE = "/yue2/score/midi";
 const LENGTH_ROUTE = "/yue2/score/length";
 const TRANSPOSE_ROUTE = "/yue2/score/transpose";
+const UNDERLAY_ROUTE = "/yue2/score/words";
 const NEW_BARS = 16;
 const NEW_BPM = 120;
 const ADD_BARS = [1, 2, 4, 8, 16, 32];
@@ -48,6 +50,23 @@ const KEEP_TOOLTIP =
     "Sing this edit even after the lyrics or the style change, instead of a new score written for the new "
     + "words. A changed line is sung on the notes of the old one; a line added moves the lines after it "
     + "along the tune, and the last line of a section can be lost.";
+const SHOW_WORDS_KEY = "yue2.score.showWords";
+const SHOW_WORDS_LABEL = "words";
+const SHOW_WORDS_TOOLTIP =
+    "Draw the lyrics under the voice's notes, a syllable a note, in order: where the words lie before "
+    + "anything is sung. A line with more or fewer syllables than notes is drawn in amber, with a dash "
+    + "under each note left without a syllable; the count at the top right names those lines. Zoomed far "
+    + "out, the words are hidden.";
+const WORDS_WIRED =
+    "The lyrics come in through a wire, so this window has not seen them yet. Run the workflow once and "
+    + "the words are drawn under the notes.";
+const WORDS_NO_PLAN = "Connect a plan to this node, and the words of its lyrics are drawn under the notes.";
+const WORDS_NOT_RUN = "Run the node once, and the lyrics it outputs are drawn under the notes.";
+const WORDS_NO_SONG = "This song has no lyrics kept with it, so there are no words to draw.";
+const WORDS_FAILED = "The words could not be laid under the notes.";
+const WORD_ROOM = 150;
+const WORD_LEAST = 9;
+const WORD_ZOOM = 24;
 const WRITE_DELAY = 250;
 const READ_DELAY = 450;
 const SUMMARY_H = 58;
@@ -121,6 +140,9 @@ const SKIN = {
     keysEdge: "#11171A",
     sectionEdge: "#F0F4F6",
     sectionHeld: "rgba(255, 255, 255, 0.35)",
+    word: "#EAF2F5",
+    wordOff: "#FFB86B",
+    wordBack: "rgba(16, 22, 26, 0.82)",
 };
 
 const BOTH = "both";
@@ -347,7 +369,7 @@ const SCORE_STYLE = `
 .yue2-s-grow { flex: 1 1 auto; }
 .yue2-s-gap { width: 10px; }
 .yue2-s-facts { font-size: 12px; color: var(--descrip-text, #999); white-space: nowrap; }
-.yue2-s-facts .yue2-s-warn { cursor: help; }
+.yue2-s-facts .yue2-s-warn, .yue2-s-facts .yue2-s-words { cursor: help; }
 .yue2-s-check { font-size: 12px; display: inline-flex; gap: 4px; align-items: center;
     color: var(--descrip-text, #bbb); user-select: none; }
 .yue2-score select.yue2-s-sound { font-size: 11px; padding: 2px 4px; margin-left: -1px;
@@ -630,6 +652,43 @@ function rememberKeep(keep) {
     }
 }
 
+function rememberedShowWords() {
+    try {
+        return window.localStorage.getItem(SHOW_WORDS_KEY) !== "0";
+    } catch (error) {
+        void error;
+        return true;
+    }
+}
+
+function rememberShowWords(shown) {
+    try {
+        window.localStorage.setItem(SHOW_WORDS_KEY, shown ? "1" : "0");
+    } catch (error) {
+        void error;
+    }
+}
+
+function lyricsOf(node, track) {
+    if (track) {
+        return typeof track.lyrics === "string" && track.lyrics.trim()
+            ? { text: track.lyrics } : { text: null, why: WORDS_NO_SONG };
+    }
+    if (sourceWords(node)) {
+        const kept = roll.splitMark(widgetNamed(node, LYRICS)?.value ?? "").score;
+        const made = typeof node.__yue2Lyrics === "string" ? node.__yue2Lyrics : null;
+        return kept || made !== null ? { text: kept || made } : { text: null, why: WORDS_NOT_RUN };
+    }
+    const source = isGenerate(node) ? node : planSource(node);
+    if (!source) return { text: null, why: WORDS_NO_PLAN };
+    const writer = isNodeOf(source, SELECT)
+        ? upstreamOf(source, PLANS, (origin) => isNodeOf(origin, BATCH))
+        : source;
+    const typed = writer && !sourceOf(writer, LYRICS) ? widgetNamed(writer, LYRICS)?.value : null;
+    if (typeof typed === "string") return { text: typed };
+    return typeof source.__yue2Sung === "string" ? { text: source.__yue2Sung } : { text: null, why: WORDS_WIRED };
+}
+
 function audioContext() {
     if (!AUDIO) AUDIO = new (window.AudioContext || window.webkitAudioContext)();
     if (AUDIO.state === "suspended") AUDIO.resume();
@@ -873,6 +932,10 @@ class ScoreEditor {
         this.width = 0;
         this.height = 0;
         this.ratio = 1;
+        this.wordsOn = rememberedShowWords();
+        this.laid = null;
+        this.wordsProblem = "";
+        this.wordsSequence = 0;
         installStyle(SCORE_STYLE_ID, SCORE_STYLE);
         this.build();
         this.open();
@@ -953,6 +1016,13 @@ class ScoreEditor {
         this.repeats = checkControl("repeats too", false, REPEATS_TOOLTIP);
         this.repeats.holder.hidden = true;
         this.repeats.box.addEventListener("change", () => this.rollBox.focus());
+        this.wordsCheck = checkControl(SHOW_WORDS_LABEL, this.wordsOn, SHOW_WORDS_TOOLTIP);
+        this.wordsCheck.box.addEventListener("change", () => {
+            this.wordsOn = this.wordsCheck.box.checked;
+            rememberShowWords(this.wordsOn);
+            this.layWords();
+            this.rollBox.focus();
+        });
         this.showPart();
         this.snapHolder = element("span");
         const zoomOut = element("button", "", "\u2212");
@@ -1001,7 +1071,8 @@ class ScoreEditor {
             pitch.appendChild(button);
             return button;
         });
-        this.rollTools.append(this.partHolder, this.repeats.holder, this.snapHolder, this.barsHolder, zoomOut, zoomIn, fit,
+        this.rollTools.append(this.partHolder, this.repeats.holder, this.wordsCheck.holder, this.snapHolder,
+            this.barsHolder, zoomOut, zoomIn, fit,
             this.undoButton, this.redoButton, element("span", "yue2-s-gap"), clipTools, element("span", "yue2-s-gap"),
             pitch);
         tools.appendChild(this.rollTools);
@@ -1199,6 +1270,9 @@ class ScoreEditor {
         this.chordPicks = new Set();
         this.notice = null;
         this.moved = null;
+        this.laid = null;
+        this.wordsProblem = "";
+        this.wordsSequence += 1;
         this.textBox.value = clean;
         this.notesDrawn = null;
         if (!clean) {
@@ -1248,6 +1322,79 @@ class ScoreEditor {
         this.showTab(this.tab);
         this.showDescription();
         this.refresh();
+        this.layWords();
+    }
+
+    async layWords() {
+        const sequence = ++this.wordsSequence;
+        const abc = (this.current || "").trim();
+        const found = this.wordsOn && this.sheet && abc ? lyricsOf(this.track ? null : this.node, this.track) : null;
+        if (!found || !found.text || !found.text.trim()) {
+            this.laid = null;
+            this.wordsProblem = found && found.text === null ? found.why : "";
+            this.wordsShown();
+            return;
+        }
+        const { ok, payload } = await ask(UNDERLAY_ROUTE, { abc, lyrics: found.text });
+        if (this.isClosed || sequence !== this.wordsSequence) return;
+        this.laid = ok && payload?.ok ? roll.wordsLaid(payload) : null;
+        this.wordsProblem = this.laid ? "" : payload?.error || WORDS_FAILED;
+        this.wordsShown();
+    }
+
+    wordsShown() {
+        if (!this.sheet) return;
+        this.paintFacts();
+        this.draw();
+    }
+
+    wordsDrawn() {
+        return this.wordsOn && this.laid && !this.chordPart && (this.both || this.part === "Vocal");
+    }
+
+    drawWords(c, model, first, lastTick) {
+        const laid = this.laid;
+        const px = this.pxPerTick;
+        if (px * this.sheet.per_quarter < WORD_ZOOM) return;
+        const notes = roll.inOrder(model.notes.Vocal);
+        const top = RULER_H + CHORD_H;
+        const fonts = ["10px system-ui, sans-serif", "600 10px system-ui, sans-serif"];
+        const fontOf = (index, line) => fonts[laid.lines[line].first === index ? 1 : 0];
+        c.save();
+        c.textBaseline = "alphabetic";
+        const places = roll.wordPlaces(notes, laid.notes, {
+            from: first - WORD_ROOM / px,
+            to: lastTick,
+            room: WORD_ROOM,
+            least: WORD_LEAST,
+            x: (tick) => Math.round(this.x(tick)) + 0.5,
+            width: (text, index, line) => {
+                c.font = fontOf(index, line);
+                return c.measureText(text).width + 6;
+            },
+        });
+        for (const place of places) {
+            const rowY = this.y(place.pitch);
+            if (rowY + ROW_H < top || rowY > this.height) continue;
+            c.fillStyle = SKIN.wordBack;
+            c.fillRect(place.left - 0.5, rowY, place.width, ROW_H - 1);
+            c.save();
+            c.beginPath();
+            c.rect(place.left - 0.5, rowY, place.width - 1, ROW_H);
+            c.clip();
+            c.font = fontOf(place.index, place.line);
+            c.fillStyle = laid.lines[place.line].kind === "fit" ? SKIN.word : SKIN.wordOff;
+            c.fillText(place.text, place.left + 2.5, rowY + ROW_H - 4);
+            c.restore();
+        }
+        c.fillStyle = SKIN.wordOff;
+        for (const index of laid.spare) {
+            const note = notes[index];
+            if (!note || note.start > lastTick || note.start + note.length < first) continue;
+            c.fillRect(Math.round(this.x(note.start)) + 1.5, this.y(note.pitch - 1) + 5,
+                Math.max(3, Math.min(Math.round(note.length * px) - 3, 9)), 2);
+        }
+        c.restore();
     }
 
     soundControl(part) {
@@ -1504,10 +1651,16 @@ class ScoreEditor {
         const meter = sheet.bars[0]?.meter || "";
         this.facts.replaceChildren([key && "Key " + key, meter, sheet.bpm + " BPM",
             sheet.bars.length + " bars", roll.clock(sheet.seconds)].filter(Boolean).join(" \u00B7 "));
-        if (this.cutTick() === null) return;
-        const sung = element("span", "yue2-s-warn", " \u00B7 sung up to " + roll.clock(this.limit.seconds));
-        sung.title = this.limit.auto ? LIMIT_AUTO_TOOLTIP : LIMIT_TOOLTIP;
-        this.facts.appendChild(sung);
+        if (this.cutTick() !== null) {
+            const sung = element("span", "yue2-s-warn", " \u00B7 sung up to " + roll.clock(this.limit.seconds));
+            sung.title = this.limit.auto ? LIMIT_AUTO_TOOLTIP : LIMIT_TOOLTIP;
+            this.facts.appendChild(sung);
+        }
+        const words = this.wordsOn ? roll.wordsFacts(this.laid, this.wordsProblem) : null;
+        if (!words) return;
+        const laid = element("span", words.warn ? "yue2-s-warn" : "yue2-s-words", " \u00B7 " + words.text);
+        laid.title = words.title;
+        this.facts.appendChild(laid);
     }
 
     cutTick() {
@@ -1891,6 +2044,7 @@ class ScoreEditor {
             this.drawPart(c, model, this.part === "Vocal" ? "Ins" : "Vocal", !this.both, first, lastTick);
             this.drawPart(c, model, this.part, false, first, lastTick);
         }
+        if (this.wordsDrawn()) this.drawWords(c, model, first, lastTick);
         const cut = this.cutTick();
         const cutX = cut === null ? null : this.x(cut);
         if (cutX !== null && cutX < W) {
@@ -3282,6 +3436,7 @@ class ScoreEditor {
             this.notesDrawn = null;
             if (this.tab === "notes") this.drawNotes();
             this.showDescription();
+            this.layWords();
         } else {
             this.setStatus(payload.error || "The edit could not be written into the score.", true);
             if (this.good && this.good !== this.model) {
@@ -3304,6 +3459,8 @@ class ScoreEditor {
             this.current = "";
             this.sheet = null;
             this.model = null;
+            this.laid = null;
+            this.wordsSequence += 1;
             this.changed = [];
             this.fillEmpty();
             this.setStatus(this.source ? "The box is empty: the node outputs " + this.source.result + " on its next run."
@@ -3463,6 +3620,7 @@ class ScoreEditor {
             this.paintFacts();
             this.showDescription();
             this.draw();
+            this.layWords();
         }
         if (typeof detail.words === "string") this.planWords = detail.words;
         if (typeof detail.score !== "string") {
@@ -3919,11 +4077,13 @@ app.registerExtension({
                 const score = message?.[SCORE_UI]?.[0];
                 const words = message?.[WORDS_UI]?.[0];
                 const auto = message?.[AUTO_SECONDS_UI]?.[0];
+                const sung = message?.[SUNG_UI]?.[0];
                 const track = message?.[TRACK_UI]?.[0];
                 const marks = message?.[MARKS_UI]?.[0];
                 if (typeof score === "string") this.__yue2Score = score;
                 if (typeof words === "string") this.__yue2Words = words;
                 if (typeof auto === "number") this.__yue2AutoSeconds = auto;
+                if (typeof sung === "string") this.__yue2Sung = sung;
                 if (typeof track === "string") {
                     this.__yue2Marks = marks && typeof marks === "object" ? { ...marks } : null;
                 }

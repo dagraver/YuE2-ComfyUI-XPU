@@ -1044,3 +1044,97 @@ export function midiFacts(facts) {
         facts.key && "Key " + facts.key, clock(facts.seconds), moved && "voice " + moved,
         facts.karaoke && "karaoke words"].filter(Boolean).join(" \u00b7 ");
 }
+
+export const WORD_KINDS = ["fit", "spare", "crowd"];
+export const WORD_REACH = 8;
+export const WORD_ROWS = 2;
+export const WORD_LINES_LISTED = 10;
+
+export const WORDS_BARE =
+    "This score names no section, so the words are not drawn under it. The node lays the lyrics along "
+    + "such a tune when it sings, on bars it chooses then.";
+export const WORDS_NONE = "The lyrics have no sung line, so there is nothing to draw under the notes.";
+export const WORDS_FIT =
+    "Every line has a note for each of its syllables. Measured on 28 songs: YuE2 then sings a word on the "
+    + "note it is drawn under about nine times in ten, and within one note nearly always.";
+export const WORDS_OFF =
+    "The lines in amber have more or fewer syllables than notes. There YuE2 sings its own way: syllables "
+    + "left over run past the phrase, and with too few the next line can start early. Change the notes or "
+    + "the words until the line fits.";
+export const WORDS_UNPAIRED =
+    "The sections of the lyrics could not be told from the sections of the score, so the lines are laid "
+    + "along the whole song.";
+
+export function inOrder(notes) {
+    return [...(notes || [])].sort((a, b) => a.start - b.start || a.pitch - b.pitch);
+}
+
+export function nextOn(notes, index, pitch, reach = WORD_REACH) {
+    for (let at = index + 1; at < notes.length && at <= index + reach; at++) {
+        if (notes[at].pitch === pitch) return notes[at];
+    }
+    return null;
+}
+
+export function wordPlaces(notes, laidNotes, view) {
+    const ends = new Map();
+    const placed = [];
+    for (const [index, line, text] of laidNotes) {
+        const note = notes[index];
+        if (!note || note.start < view.from) continue;
+        if (note.start > view.to) break;
+        const left = view.x(note.start);
+        const wanted = Math.min(view.width(text, index, line), view.room);
+        let found = null;
+        for (let down = 1; down <= WORD_ROWS && !(found && !found.clipped); down++) {
+            const pitch = note.pitch - down;
+            if ((ends.get(pitch) ?? -Infinity) > left) continue;
+            const next = nextOn(notes, index, pitch);
+            const room = Math.min(view.room, next ? view.x(next.start) - 2 - left : view.room);
+            if (room >= wanted) found = { pitch, width: wanted, clipped: false };
+            else if (!found && room >= view.least) found = { pitch, width: room, clipped: true };
+        }
+        if (!found) continue;
+        ends.set(found.pitch, left + found.width);
+        placed.push({ index, line, text, left, ...found });
+    }
+    return placed;
+}
+
+export function wordsLaid(payload) {
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.lines)
+        || !Array.isArray(payload.notes)) return null;
+    const lines = payload.lines.filter((row) => row && WORD_KINDS.includes(row.kind));
+    if (lines.length !== payload.lines.length) return null;
+    return {
+        bare: Boolean(payload.bare),
+        paired: payload.paired !== false,
+        lines,
+        notes: payload.notes.filter((row) => Array.isArray(row) && Number.isInteger(row[0])
+            && Number.isInteger(row[1]) && typeof row[2] === "string" && Boolean(lines[row[1]])),
+        spare: (Array.isArray(payload.spare) ? payload.spare : []).filter(Number.isInteger),
+        sung: Number(payload.sung) || 0,
+    };
+}
+
+function counted(count, noun) {
+    return count + " " + noun + (count === 1 ? "" : "s");
+}
+
+export function wordsFacts(laid, problem) {
+    if (problem) return { text: "words not shown", title: String(problem), warn: false };
+    if (!laid) return null;
+    if (laid.bare) return { text: "words not shown", title: WORDS_BARE, warn: false };
+    if (!laid.lines.length) return { text: "no words", title: WORDS_NONE, warn: false };
+    const off = laid.lines.filter((row) => row.kind !== "fit");
+    const apart = laid.paired ? "" : "\n\n" + WORDS_UNPAIRED;
+    if (!off.length) return { text: "words fit", title: WORDS_FIT + apart, warn: !laid.paired };
+    const listed = off.slice(0, WORD_LINES_LISTED).map((row) => "\u2022 " + row.text + " \u2014 "
+        + counted(row.syllables, "syllable") + ", " + (row.notes ? counted(row.notes, "note") : "no note left"));
+    if (off.length > listed.length) listed.push("\u2022 and " + (off.length - listed.length) + " more");
+    return {
+        text: (laid.lines.length - off.length) + " of " + counted(laid.lines.length, "line") + " fit",
+        title: WORDS_OFF + "\n\n" + listed.join("\n") + apart,
+        warn: true,
+    };
+}
