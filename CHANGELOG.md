@@ -7,6 +7,39 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.13.1 - 2026-10-12
+
+### Fixed
+
+- **`YuE2 Edit Track` lost its place in a long song.** To light the words in
+  the track window, and to find the stretch a change of words is sung over,
+  the node asks Qwen3-ForcedAligner when each word is sung. It gave the
+  aligner the whole song as mixed in one pass, and in a song of more than
+  about two minutes the aligner lost lines and spread their words evenly over
+  the gap. In a song of 312 seconds a line of the second verse stood 15
+  seconds early, on an interlude -- a change of its words was sung there and
+  the line itself left as it was -- and the four lines of the outro stood on
+  one instant. The song is now heard a section at a time: each section of the
+  lyrics on the seconds its section of the score is sung in, on the separated
+  voice. A section whose answer comes back out of order is heard again with
+  the section before it: the model sometimes sings a verse's first line on a
+  phrase left over at the end of the chorus. Measured on 28 songs of 38 to
+  312 seconds. Of 323 lines with a note for every syllable, 304 now start
+  within half a second of their phrase in the score, where 219 did. With no
+  score in it, Qwen3-ASR hearing each line where its times put it, 1915 of
+  the songs' 2300 words are heard, where 1731 were. Through the node, that
+  line of the second verse was rewritten where it is sung, and both takes
+  came back with all five new words. A song of under two minutes was right
+  before and is right now; a song with no score, or with lyrics that cannot
+  be paired with the sections of its score, is heard in one pass as before.
+  [More](README.md#what-it-runs)
+- **Word times kept beside a song are measured again** the first time it is
+  opened, when they were kept by 0.13.0 or earlier and the song can be heard
+  by sections: 12 seconds for the song of 312, once. Opening a song for the
+  first time costs what it did, since the voice the bars are placed by is the
+  one its words are timed on. After an edit only the sections it reached are
+  heard, 2 to 3 seconds a take.
+
 ## 0.13.0 - 2026-10-12
 
 ### Added

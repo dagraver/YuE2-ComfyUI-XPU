@@ -61,6 +61,18 @@ class Aligner:
         self.step_ms = int(step_ms)
 
 
+class Times(list):
+    """``[(word, start, stop)]`` that also says how sure the answer is.
+
+    ``lost`` holds, for each word, how many of its two time stamps came back
+    out of order and were put in place by ``repair``. A stretch whose words
+    are sung in it comes back with few of them lost; one that is given words
+    it does not hold all of comes back with many (``edit_track.PART_UNREAD``).
+    """
+
+    lost = ()
+
+
 def is_loaded() -> bool:
     """Whether the aligner is held, for the report Unload Models writes; it is kept in ``runtime``."""
     from . import runtime
@@ -212,12 +224,15 @@ def repair(values) -> list:
 
 @torch.inference_mode()
 def align(aligner: Aligner, audio: torch.Tensor, text: str, cancelled=None, progress=None) -> list:
-    """``[(word, start, stop)]`` in seconds for the words of ``text`` in ``[samples]`` of mono 16 kHz audio."""
+    """``[(word, start, stop)]`` in seconds for the words of ``text`` in ``[samples]`` of mono 16 kHz audio.
+
+    The list is a ``Times``: it says which stamps had to be repaired.
+    """
     from .align import words_of
 
     words = words_of(text)
     if not words:
-        return []
+        return Times()
     if audio.numel() and not torch.isfinite(audio).all():
         raise ValueError("the audio holds samples that are not finite numbers")
     net, head = aligner.net, aligner.head
@@ -255,7 +270,12 @@ def align(aligner: Aligner, audio: torch.Tensor, text: str, cancelled=None, prog
         x = net.language_model.norm(x)
         stamps = (request[0] == aligner.stamp).nonzero().squeeze(-1)
         steps = head(x[0, stamps]).float().argmax(-1).cpu().tolist()
-    times = repair([step * aligner.step_ms for step in steps])
-    log.info("[yue2_comfy.asr.aligner] %d words timed in one pass of %d tokens", len(words), length)
-    return [(word, times[2 * index] / 1000.0, times[2 * index + 1] / 1000.0)
-            for index, word in enumerate(words)]
+    raw = [step * aligner.step_ms for step in steps]
+    times = repair(raw)
+    found = Times((word, times[2 * index] / 1000.0, times[2 * index + 1] / 1000.0)
+                  for index, word in enumerate(words))
+    found.lost = tuple(int(raw[2 * index] != times[2 * index]) + int(raw[2 * index + 1] != times[2 * index + 1])
+                       for index in range(len(words)))
+    log.info("[yue2_comfy.asr.aligner] %d words timed in one pass of %d tokens, %d of their %d stamps "
+             "out of order", len(words), length, sum(found.lost), 2 * len(words))
+    return found

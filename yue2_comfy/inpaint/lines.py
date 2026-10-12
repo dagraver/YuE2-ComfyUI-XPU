@@ -30,12 +30,30 @@ sound it is sung in (``carried_along``) and past the bars before its seams
 that were sung again (``stretched``): those sing the same words in the same
 place, so nothing needs hearing again.
 
+A song is heard a section at a time (``sections``), each section of the
+lyrics on the stretch of sound its section of the score is sung in. Heard
+whole, the aligner loses its place in a long song and spreads the words it
+lost evenly over the gap. Measured on 2026-10-12 on the 28 songs of the
+words-under-notes stand, 38 to 312 seconds long, two ways. By the score: of
+323 lines with a note for every syllable, the first word of 219 came back
+within half a second of where the line's phrase starts for one pass over the
+song as mixed, of 258 for one pass over its separated voice, and of 304 for
+the pack's own hearing by sections; on the 27 songs whose sections pair by
+name, 251 of 300 for the song as mixed a section at a time and 281 for the
+separated voice. With no score in it: Qwen3-ASR, told the language, heard
+each line where the times put it, and of the songs' 2300 words it wrote 1731
+for the one pass and 1915 for the sections. A duet of 312 seconds had 6 of
+its 26 lines on their phrases heard whole and 25 a section at a time, a
+line of its second verse 15 seconds early and its last four in one instant;
+a song of 38 seconds was right either way.
+
 Standard library and the word rule the aligner counts by, so this runs
 wherever the edit list runs, with no model and no torch.
 """
 
 from __future__ import annotations
 
+from .. import phrasing, underlay
 from ..asr.align import normal, words_of
 from . import ops
 
@@ -69,6 +87,88 @@ def heard_text(lyrics: str) -> str:
     ``sung_lines`` word for word however the lyrics were punctuated.
     """
     return chr(10).join(" ".join(words) for _number, words in sung_lines(lyrics))
+
+
+SECTION_EARLY = 0.4
+"""Seconds before a section's first sung note that the stretch it is heard in opens.
+
+A singer comes in ahead of the score more often than behind it, and a stretch
+that opens on seconds of playing has its first word put where it opens
+(``track.sings_from``), so it opens a little early and no more. Measured on
+2026-10-12 on the 27 songs of the words-under-notes stand whose sections pair,
+300 lines counted as the module says: 281, 285, 288 and 281 right opening
+0.25, 0.4, 0.46 and 0.5 seconds early, then 274 at 0.54, 271 at 0.6 and 268
+at 0.75 and at a second. Where a stretch closes changed nothing, from the next
+section's first note to half a second before it."""
+
+SECTION_CLEAR = 0.1
+"""Seconds before the next section's first sung note that a section's stretch closes."""
+
+SECTION_LEAST = 1.0
+"""The shortest stretch a section is heard in, in seconds."""
+
+
+def sections(lyrics: str, laid, seconds: float):
+    """``[(start, stop, text)]``: the seconds each sung section of ``lyrics`` is heard in, with its lines; None when that cannot be told.
+
+    ``laid`` is the score's sections as ``grid.layout`` lays them on the song,
+    and ``seconds`` how long the song is. A section of the lyrics is a tag
+    with sung lines under it, the lines before the first tag being a verse,
+    and it is paired with a section of the score as the words drawn under
+    the notes are: by name (``underlay.by_name``), as an edit pairs them,
+    and by size where the names do not line up (``underlay.by_size``). On
+    the stand's 27 songs whose names pair, sizes gave the same pairs; on the
+    one whose names do not, 224 seconds long, sizes put 21 of 23 lines
+    right where one pass over the song as mixed put 16. Its stretch runs from
+    ``SECTION_EARLY`` before that section's first sung note to
+    ``SECTION_CLEAR`` before the first sung note of the next one paired, so
+    the playing between two sung sections is heard with the one before it,
+    and the last runs to the end of the song. ``text`` is the section's lines
+    as ``heard_text`` writes them, so the texts joined are ``heard_text`` of
+    the lyrics, word for word.
+
+    None when the sections cannot be paired either way, or when one would
+    open past the end of the sound: a song that stops short of its score is
+    heard whole.
+    """
+    blocks = []
+    current = None
+    for line in str(lyrics or "").splitlines():
+        stripped = line.strip()
+        tag = phrasing.TAG.fullmatch(stripped) if stripped else None
+        if tag:
+            current = [phrasing.label_of(tag.group(1)), [], 0]
+            blocks.append(current)
+            continue
+        words = words_of(line)
+        if not words:
+            continue
+        if current is None:
+            current = ["verse", [], 0]
+            blocks.append(current)
+        current[1].append(" ".join(words))
+        current[2] += len(underlay.parts_of(line))
+    blocks = [block for block in blocks if block[1]]
+    if not blocks:
+        return None
+    named = [(" ".join(str(section["name"]).lower().split()), section["notes"]) for section in laid]
+    labels = [label for label, _rows, _count in blocks]
+    pairs = underlay.by_name(labels, named)
+    if pairs is None:
+        pairs = underlay.by_size(labels, [count for _label, _rows, count in blocks], named)
+    if pairs is None:
+        return None
+    opens = [section["start"] if section["sung"] is None else section["sung"] for section in laid]
+    found = []
+    for index, ((_label, rows, _count), at) in enumerate(zip(blocks, pairs)):
+        start = max(0.0, opens[at] - SECTION_EARLY)
+        stop = float(seconds)
+        if index + 1 < len(pairs):
+            stop = min(stop, max(start + SECTION_LEAST, opens[pairs[index + 1]] - SECTION_CLEAR))
+        if stop - start < SECTION_LEAST:
+            return None
+        found.append((start, stop, chr(10).join(rows)))
+    return found
 
 
 def placed(lyrics: str, times) -> list:

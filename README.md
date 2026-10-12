@@ -1357,7 +1357,14 @@ decode away.*
   it the bars come from the chroma alone, and the node says so.
 - **Qwen3-ForcedAligner-0.6B** (1.84 GB) finds where each line is sung. It is
   downloaded with the first change of words; with it on the machine, the lines
-  light up by their real times.
+  light up by their real times. It hears the song a section at a time, on the
+  separated voice: given a whole song of more than about two minutes it lost
+  its place, and a line of a 312-second song stood 15 seconds early. On 28
+  songs, 304 of the 323 lines with a note for every syllable start within
+  half a second of their phrase in the score, where one pass over the song
+  had 219, and Qwen3-ASR hears 1915 of their 2300 words where the times put
+  them, against 1731. A song with no score, or with lyrics that cannot be
+  paired with its score's sections, is heard in one pass.
 - **Qwen3-ASR-1.7B** (3.8 GB) hears the takes. New words and a song that goes
   on with new lines always use it, and fetch it; a retake or new notes use it
   only when it is already there.
@@ -1371,6 +1378,10 @@ against about a hundred seconds to sing the song again. On a three-minute song
 with `offload` at `auto`, `on` and `on` with `low_vram`, a retake reserved
 10.93, 5.15 and 3.09 GiB of the card, where singing the song had reserved
 10.98, 5.46 and 3.48. Outside the edit the audio is the old file's own samples.
+A song of five minutes opened for the first time in 15 seconds, most of them
+the separator placing its bars, and in under a second after that; the words of
+a take are timed in 2 to 3 seconds, only the sections its edit reached being
+heard again.
 
 Template 11, *Edit a song*, puts the node after a song and saves what it hands
 back. The window is in English only.

@@ -394,3 +394,71 @@ SNOW = "\u0421\u043d\u0435\u0433 \u043b\u043e\u0436\u0438\u0442\u0441\u044f"
 def test_the_letters_of_the_words_asked_name_the_language_they_are_heard_in(text, language):
     """Latin letters name nothing: a dozen of the recogniser's languages write with them."""
     assert lines.language_of(text) == language
+
+
+def laid_out(*sections):
+    """The sections of a score as ``grid.layout`` hands them over: name, first sung second or None, vocal notes."""
+    found, at = [], 0.0
+    for name, sung, notes in sections:
+        found.append({"name": name, "start": at, "sung": sung, "notes": notes})
+        at = (sung if sung is not None else at) + 10.0
+    return found
+
+
+def test_a_song_is_heard_a_section_at_a_time_from_just_before_each_is_sung():
+    """Heard whole, the aligner loses its place in a long song; a section is short enough to hold.
+
+    A stretch opens ``SECTION_EARLY`` before the section's first sung note
+    and closes ``SECTION_CLEAR`` before the next sung section's, so the
+    playing between two of them goes with the one before; the last runs to
+    the end of the song.
+    """
+    laid = laid_out(("intro", None, 0), ("verse", 10.0, 9), ("chorus", 30.0, 8), ("outro", None, 0))
+    found = lines.sections(SONG, laid, 60.0)
+    assert found == [
+        (pytest.approx(10.0 - lines.SECTION_EARLY), pytest.approx(30.0 - lines.SECTION_CLEAR),
+         "the road is long" + LF + "the night is cold"),
+        (pytest.approx(30.0 - lines.SECTION_EARLY), 60.0, "we rise up tonight" + LF + "we rise up again")]
+    assert LF.join(text for _start, _stop, text in found) == lines.heard_text(SONG), (
+        "the sections' lines are the song's, word for word, so their times join into the song's")
+
+
+def test_lines_before_the_first_tag_are_a_verse_and_a_tag_with_nothing_sung_is_no_section():
+    words = LF.join(["the road is long", "", "[bridge]", "", "[chorus]", "we rise up tonight"])
+    laid = laid_out(("verse", 5.0, 4), ("bridge", None, 0), ("chorus", 25.0, 4))
+    found = lines.sections(words, laid, 40.0)
+    assert [text for _start, _stop, text in found] == ["the road is long", "we rise up tonight"]
+    assert found[0][1] == pytest.approx(25.0 - lines.SECTION_CLEAR), (
+        "the bridge is played, so it is heard with the verse before it")
+
+
+def test_sections_whose_names_do_not_line_up_are_paired_by_size():
+    """The model names its sections in another order in one song of ten; the words drawn under the notes pair them so too."""
+    laid = laid_out(("intro", 1.0, 2), ("verse", 10.0, 8), ("bridge", 30.0, 8), ("verse", 50.0, 2))
+    found = lines.sections(SONG, laid, 70.0)
+    assert [round(start, 2) for start, _stop, _text in found] == [
+        round(10.0 - lines.SECTION_EARLY, 2), round(30.0 - lines.SECTION_EARLY, 2)], (
+        "the chorus has eight syllables and goes on the eight notes after the verse, not on the two at the end")
+
+
+def test_a_song_whose_sections_cannot_be_told_is_heard_whole():
+    """None is the answer that sends the song to one pass over all of it, as before."""
+    assert lines.sections(SONG, laid_out(("verse", 10.0, 9)), 60.0) is None, (
+        "two sections of words and one of singing")
+    assert lines.sections("[verse]" + LF + "..." + LF, laid_out(("verse", 10.0, 9)), 60.0) is None, (
+        "nothing sung")
+    laid = laid_out(("verse", 10.0, 9), ("chorus", 30.0, 8))
+    assert lines.sections(SONG, laid, 30.2) is None, (
+        "the song stops short of its score: the chorus would be heard in less than a second of sound")
+    assert lines.sections(SONG, laid, 40.0) is not None
+
+
+def test_times_say_how_many_of_their_stamps_came_back_out_of_order():
+    """A plain list is what a file or another reader hands over: it says nothing, which reads as sure."""
+    pytest.importorskip("torch")
+    from yue2_comfy.asr import aligner
+
+    times = aligner.Times([("a", 0.0, 0.4), ("b", 0.5, 0.9)])
+    assert list(times) == [("a", 0.0, 0.4), ("b", 0.5, 0.9)] and times.lost == ()
+    times.lost = (2, 1)
+    assert times[1:] == [("b", 0.5, 0.9)]

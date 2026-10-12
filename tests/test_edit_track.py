@@ -53,6 +53,9 @@ SAMPLES_A_FRAME = 1920
 SPEECH_FOLDER = edit_track._speech_folder
 """The real lookup, kept before the fixture below stands it in for every test."""
 
+VOICE_PARTS = edit_track._voice_parts
+"""The real separating of a song's sections, put back by the test about it."""
+
 VOICE_LEVEL = edit_track._voice_level
 """The real one too: a move hears the voice through it, and a test about that puts it back."""
 
@@ -109,13 +112,22 @@ def no_ears_of_the_machine(monkeypatch):
     where this machine keeps them, so a run would load both onto the card and
     hear silence -- and a machine without them, downloading on, would fetch
     4 GB. A test about hearing stands them in itself. So is the separator a
-    move hears the voice with.
+    move hears the voice with, and the one a song's sections are separated
+    with before their words are timed: without it they are heard as mixed.
+    What one test heard of a section is not there for the next.
     """
     monkeypatch.setattr(edit_track, "_aligner_at_hand", lambda settings: None)
     monkeypatch.setattr(edit_track, "_speech_folder", lambda settings, progress, notices: None)
     monkeypatch.setattr(edit_track, "_ears_at_hand", lambda settings: None)
     monkeypatch.setattr(edit_track, "_voice_level", lambda *args, **kwargs: None)
     monkeypatch.setattr(edit_track, "_voices_in", lambda *args, **kwargs: [])
+    monkeypatch.setattr(edit_track, "_voice_parts", no_separator)
+    monkeypatch.setattr(edit_track, "_PARTS", type(edit_track._PARTS)())
+    monkeypatch.setattr(edit_track, "_WHOLE_VOICES", type(edit_track._WHOLE_VOICES)())
+
+
+def no_separator(*args, **kwargs):
+    raise FileNotFoundError("the tests have no voice separator")
 
 
 @pytest.fixture
@@ -1064,22 +1076,23 @@ def test_a_words_edit_sings_the_stretch_selected_with_the_new_words(stand):
 def test_a_words_edit_with_no_bars_is_placed_by_hearing_the_song(stand, monkeypatch):
     """The precise path: the aligner is given the words and says where that line is sung.
 
-    The line chosen is the song's first, so it opens where it does and closes
-    a step before the next line's first word: 1.5 s less 80 ms, which is frame
-    36.
+    It is given a section at a time, each on the stretch that section is
+    sung in. The line chosen is the song's first, so it opens where it does,
+    which is where the verse is heard from, and closes a step before the
+    next line's first word, 1.44 s on: 80 ms before each, frames 82 and 118.
     """
     from yue2_comfy import download
     from yue2_comfy.asr import runtime as asr_runtime
 
-    asked = {}
+    asked = []
 
     def word_times(folder, reader, device, waveform, rate, text, key, progress=None,
                    cancelled=None, low_vram=False):
-        asked.update(folder=folder, reader=reader, text=text, key=key)
+        asked.append((folder, reader, text, round(waveform.shape[-1] / rate, 2)))
         found, at = [], 0.0
         for word in text.split():
             found.append((word, at, at + 0.4))
-            at += 0.5
+            at += 0.48
         return found
 
     monkeypatch.setattr(download, "ensure_aligner", lambda settings, progress=None: "aligner")
@@ -1087,9 +1100,12 @@ def test_a_words_edit_with_no_bars_is_placed_by_hearing_the_song(stand, monkeypa
                         lambda folder, settings, progress=None: "tokenizer")
     monkeypatch.setattr(asr_runtime, "word_times", word_times)
     run(stand, '[{"op": "words", "lines": [3, 4], "text": "one two four", "seed": 40}]')
-    assert asked["text"].splitlines() == ["one two three", "four five six", "seven eight"], (
-        "the aligner is given the words as they are sung, tags and blank lines left out")
-    assert stand.calls == [("retake", 0, 36, (40, 41))]
+    assert asked[:2] == [
+        ("aligner", "tokenizer", "one two three\nfour five six", 4.32),
+        ("aligner", "tokenizer", "seven eight", 13.64)], (
+        "the aligner is given the words as they are sung, tags and blank lines left out, a "
+        "section at a time on the seconds it is sung in")
+    assert stand.calls == [("retake", 82, 118, (40, 41))]
     assert "one two four" in stand.words[0]
 
 
@@ -1146,8 +1162,29 @@ def hearing(monkeypatch, said, seen=None):
     monkeypatch.setattr(asr_runtime, "hear", hear)
 
 
+HEARD_FROM = (("one two three four five six", 3.36), ("seven eight", 7.36))
+"""The words of each sung section of ``LYRICS`` and the second it is heard from.
+
+``lines.SECTION_EARLY`` before the section's first sung note, on the frame
+after: the verse's pickup is at 3.75 s and the chorus's at 7.75, so frames 84
+and 184."""
+
+LINES = [[3, 3.36, 4.76], [4, 4.86, 6.26], [7, 7.36, 8.26]]
+"""When ``lined`` says each line of ``LYRICS`` is sung, as the window is handed it."""
+
+
+def heard_at(first=0.0, gap=0.5):
+    """``[(word, start)]`` for every word of ``LYRICS`` as ``lined(first=first, gap=gap)`` times them."""
+    return [(word, opens + first + gap * index) for said, opens in HEARD_FROM
+            for index, word in enumerate(said.split())]
+
+
 def lined(monkeypatch, calls=None, first=0.0, gap=0.5):
-    """The aligner stood in and at hand: the first word at ``first`` seconds, each next ``gap`` after the last."""
+    """The aligner stood in and at hand: the first word ``first`` seconds into what it is given, each next ``gap`` after the last.
+
+    What it is given is a section of the song, so every section's words
+    start over from where that section is heard.
+    """
     from yue2_comfy.asr import runtime as asr_runtime
 
     monkeypatch.setattr(edit_track, "_aligner_at_hand",
@@ -1288,15 +1325,14 @@ SUNG = "one two three four five six seven eight"
 """Every word of ``LYRICS``, in order, as the aligner is given them."""
 
 
-def sung_there(at, first=4.6, gap=1.0):
-    """The words of ``SUNG`` whose middle lies in ``at``, timed as ``lined(first=4.6, gap=1.0)`` times them."""
-    return [word for index, word in enumerate(SUNG.split())
-            if at[0] <= first + index * gap + 0.2 < at[1]]
+def sung_there(at, first=0.6, gap=0.5):
+    """The words of ``SUNG`` whose middle lies in ``at``, timed as ``lined(first=0.6)`` times them."""
+    return [word for word, start in heard_at(first, gap) if at[0] <= start + 0.2 < at[1]]
 
 
 def test_a_retake_keeps_the_take_heard_singing_the_words_there(stand, monkeypatch):
     """Take 2 joins better; take 1 is heard singing the verse. The words are what is listened to."""
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {"was": SUNG, 9: SUNG, 10: "one"})
     drawn = payload(run(stand, RETAKE))
     there = sung_there(drawn["at"])
@@ -1327,7 +1363,7 @@ def test_a_retake_is_heard_after_the_singing_model_is_let_go(stand, monkeypatch)
             return False
 
     monkeypatch.setattr("yue2_comfy.staged.session", watched)
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {"was": SUNG, 9: SUNG, 10: SUNG})
     heard = asr_runtime.hear
     monkeypatch.setattr(asr_runtime, "hear",
@@ -1353,8 +1389,8 @@ def test_a_retake_is_heard_by_the_word_times_kept_beside_the_song(stand, monkeyp
     monkeypatch.setattr(songs, "_store", songs.Store(str(tmp_path)))
     name = songs.remember(stand.wave, RATE, stand.song)
     text = lines.heard_text(LYRICS)
-    edit_track._times_keep(name, text, [(word, 4.6 + index, 5.0 + index)
-                                        for index, word in enumerate(text.split())])
+    edit_track._times_keep(name, text, [(word, start, start + 0.4) for word, start in heard_at(0.6)],
+                           sections=True)
     seen = []
     hearing(monkeypatch, {"was": SUNG, 9: SUNG, 10: "one"}, seen)
     drawn = payload(run(stand, RETAKE))
@@ -1367,7 +1403,7 @@ def test_a_retake_without_the_speech_model_is_left_to_the_join_without_a_word(st
     """Hearing a retake is a better pick, not the edit: nothing is fetched and nothing is said."""
     from yue2_comfy import download
 
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     fetched = []
     monkeypatch.setattr(download, "ensure_asr",
                         lambda settings, progress=None: fetched.append(1) or "speech")
@@ -1380,7 +1416,7 @@ def test_a_retake_without_the_speech_model_is_left_to_the_join_without_a_word(st
 
 def test_a_retake_where_nothing_is_sung_is_not_heard(stand, monkeypatch):
     seen = []
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {}, seen)
     drawn = payload(run(stand, '[{"op": "retake", "bars": [8, 10], "seed": 9}]'))
     assert seen == [] and drawn["chosen"] == 1 and drawn["asked"] is None
@@ -1388,7 +1424,7 @@ def test_a_retake_where_nothing_is_sung_is_not_heard(stand, monkeypatch):
 
 def test_a_retake_heard_as_well_as_the_song_it_replaces_is_not_mumbling(stand, monkeypatch):
     """The recogniser misses the same words in the song and in its takes."""
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {"was": "one", 9: "one", 10: "one"})
     said = said_by(monkeypatch)
     drawn = payload(run(stand, RETAKE))
@@ -1399,7 +1435,7 @@ def test_a_retake_heard_as_well_as_the_song_it_replaces_is_not_mumbling(stand, m
 
 def test_a_retake_kept_that_is_heard_singing_less_than_the_song_did_is_said_to(stand,
                                                                                monkeypatch):
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {"was": SUNG, 9: "one", 10: "one"})
     said = said_by(monkeypatch)
     drawn = payload(run(stand, RETAKE))
@@ -1470,7 +1506,7 @@ def test_the_window_is_told_when_each_line_is_sung(stand, monkeypatch):
     """Lines 4, 5 and 8 of the words are the sung ones; tags and blank lines have no time."""
     lined(monkeypatch)
     drawn = payload(run(stand))
-    assert drawn["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9]]
+    assert drawn["lines"] == LINES
 
 
 def test_without_the_aligner_at_hand_the_window_places_lines_by_the_bars(stand):
@@ -1485,19 +1521,19 @@ def test_every_take_carries_the_lines_of_the_song_it_makes(stand, monkeypatch):
     kept = drawn["chosen"]
     assert drawn["takes"][kept]["lines"] == drawn["lines"]
     assert all(take["lines"] for take in drawn["takes"])
-    assert drawn["before"]["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9]]
-    assert sorted(fill for _key, _text, fill in calls) == [0.0, 0.1, 0.2], (
-        "the song, the other take and the song as it was, each heard once")
-    assert len({key for key, _text, _fill in calls}) == 3
+    assert drawn["before"]["lines"] == LINES
+    assert sorted(fill for _key, _text, fill in calls) == [0.0, 0.0, 0.1, 0.1, 0.2, 0.2], (
+        "the song, the other take and the song as it was, each heard once, a section at a time")
+    assert len({key for key, _text, _fill in calls}) == 6
 
 
 def test_the_song_as_it_was_is_numbered_as_the_words_the_window_shows(stand, monkeypatch):
     """One line became two, so every line after them moved down by one."""
     lined(monkeypatch)
     drawn = payload(run(stand, WORDS.replace("one two four", "one two\\nfour")))
-    assert drawn["lines"] == [[3, 0.0, 0.9], [4, 1.0, 1.4], [5, 1.5, 2.9], [8, 3.0, 3.9]]
-    assert drawn["before"]["lines"] == [[3, 0.0, 1.4], [4, 0.0, 1.4], [5, 1.5, 2.9],
-                                        [8, 3.0, 3.9]]
+    assert drawn["lines"] == [[3, 3.36, 4.26], [4, 4.36, 4.76], [5, 4.86, 6.26], [8, 7.36, 8.26]]
+    assert drawn["before"]["lines"] == [[3, 3.36, 4.76], [4, 3.36, 4.76], [5, 4.86, 6.26],
+                                        [8, 7.36, 8.26]]
 
 
 def test_the_lines_of_a_song_wait_beside_it_for_the_next_run(stand, monkeypatch, tmp_path):
@@ -1506,9 +1542,9 @@ def test_the_lines_of_a_song_wait_beside_it_for_the_next_run(stand, monkeypatch,
     calls = []
     lined(monkeypatch, calls)
     run(stand)
-    assert len(calls) == 1 and (tmp_path / (name + edit_track.WORDS_SUFFIX)).is_file()
+    assert len(calls) == 2 and (tmp_path / (name + edit_track.WORDS_SUFFIX)).is_file()
     run(stand)
-    assert len(calls) == 1, "read beside the song, not heard again"
+    assert len(calls) == 2, "read beside the song, not heard again"
 
 
 def test_a_song_whose_lines_cannot_be_found_is_still_drawn(stand, monkeypatch):
@@ -1590,7 +1626,7 @@ def test_the_window_is_handed_the_score_it_opens_the_notes_on(stand):
 
 def test_a_change_of_notes_is_heard_like_a_retake_of_its_bars(stand, monkeypatch):
     """The words do not change, so the takes are heard against the words the song sings there."""
-    lined(monkeypatch, first=4.6, gap=1.0)
+    lined(monkeypatch, first=0.6)
     hearing(monkeypatch, {"was": SUNG, 9: SUNG, 10: "one"})
     drawn = payload(run(stand, json.dumps([notes_of({36: 67})])))
     there = sung_there(drawn["at"])
@@ -1718,11 +1754,10 @@ def test_a_song_going_on_has_its_new_lines_timed_on_its_new_part_alone(stand, mo
     since = went_from()
     assert since == pytest.approx(goes_on_from() * FRAME_SECONDS)
     assert {(text, fill) for _key, text, fill in calls} == {
-        ("one two three\nfour five six\nseven eight", 0.0),
+        ("one two three\nfour five six", 0.0), ("seven eight", 0.0),
         ("nine ten eleven\ntwelve thirteen", 0.1)}, "never the whole song's words at once"
-    assert drawn["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9],
-                              [10, round(since, 3), round(since + 1.4, 3)],
-                              [11, round(since + 1.5, 3), round(since + 2.4, 3)]]
+    assert drawn["lines"] == LINES + [[10, round(since, 3), round(since + 1.4, 3)],
+                                      [11, round(since + 1.5, 3), round(since + 2.4, 3)]]
 
 
 def test_a_line_a_song_went_on_with_is_rewritten_where_its_new_part_sings_it(stand, monkeypatch):
@@ -1827,16 +1862,13 @@ def test_a_moved_song_keeps_the_times_of_its_words_and_is_not_heard_again(stand,
     from yue2_comfy.inpaint import lines
 
     _state, step = moved_step()
-    verse = [frame * FRAME_SECONDS for frame in step.pieces[2]]
-    first = verse[0] + 0.1
-    gap = (verse[1] - first) / 5.8
     calls = []
-    lined(monkeypatch, calls, first=first, gap=gap)
+    lined(monkeypatch, calls, first=0.6)
     drawn = payload(run(stand, MOVE))
     said = lines.heard_text(LYRICS)
-    assert [text for _key, text, _fill in calls] == [said], "the song as it was, once"
-    old = [(word, round(first + gap * index, 3), round(first + gap * index + 0.4, 3))
-           for index, word in enumerate(said.split())]
+    assert [text for _key, text, _fill in calls] == ["one two three\nfour five six", "seven eight"], (
+        "the song as it was, once, a section at a time")
+    old = [(word, round(start, 3), round(start + 0.4, 3)) for word, start in heard_at(0.6)]
     pieces = [(start * FRAME_SECONDS, stop * FRAME_SECONDS) for start, stop in step.pieces]
     times = lines.carried_along(old, said, pieces, lines.heard_text(step.lyrics))
     assert times is not None and times[0][0] == "seven"
@@ -1984,16 +2016,15 @@ def test_the_words_after_a_break_are_lit_later_by_it_and_not_heard_again(stand, 
     from yue2_comfy.inpaint import lines
 
     calls = []
-    lined(monkeypatch, calls, first=1.0, gap=1.5)
+    lined(monkeypatch, calls, first=0.6)
     drawn = payload(run(stand, BREAK))
     state, step = break_step()
     _written, length = break_written(step)
     said = lines.heard_text(LYRICS)
-    assert {(key, text) for key, text, _fill in calls} == {(calls[0][0], said)}, (
-        "only the song as it was is heard -- the speech runtime keeps a sound's times by its key "
-        "-- and no take is")
-    old = [(word, round(1.0 + 1.5 * index, 3), round(1.0 + 1.5 * index + 0.4, 3))
-           for index, word in enumerate(said.split())]
+    assert [(text, fill) for _key, text, fill in calls] == [
+        ("one two three\nfour five six", 0.0), ("seven eight", 0.0)], (
+        "only the song as it was is heard, a section at a time, and no take is")
+    old = [(word, round(start, 3), round(start + 0.4, 3)) for word, start in heard_at(0.6)]
     at = step.start * FRAME_SECONDS
     times = lines.carried_along(old, said, [(0.0, at), (at, FRAMES * FRAME_SECONDS)],
                                 lines.heard_text(step.lyrics))
@@ -2002,3 +2033,290 @@ def test_the_words_after_a_break_are_lit_later_by_it_and_not_heard_again(stand, 
                               for number, start, stop in lines.placed(step.lyrics, times)]
     assert drawn["lines"][-1][1] > at + (length + 1) * FRAME_SECONDS - 0.5, (
         "the chorus is lit after the break")
+
+
+VERSE, CHORUS = "one two three\nfour five six", "seven eight"
+"""The lines of the two sung sections of ``LYRICS``, as the aligner is given them."""
+
+PLACE = ("aligner", "tokenizer", "cuda", False)
+
+HOP = RATE * FRAME_SECONDS
+
+
+def a_ramp(torch, frames=FRAMES):
+    """A sound whose every sample is another number, so a stretch of it is known from any other."""
+    return (torch.arange(frames * SAMPLES_A_FRAME, dtype=torch.float32) / 1000.0).repeat(2, 1)[None]
+
+
+def the_windows():
+    """Where the sections of the stand's song are heard, in frames."""
+    from yue2_comfy.inpaint import lines
+
+    state = track.opened(a_song(), a_clock())
+    return edit_track._windows_of(state, lines.heard_text(LYRICS))
+
+
+def test_the_sections_of_a_song_open_on_the_frame_after_and_never_before():
+    """The earlier a stretch opens, the more often its first word is put on the playing before it."""
+    from yue2_comfy.inpaint import lines
+
+    assert the_windows() == [(84, 192, VERSE), (184, FRAMES, CHORUS)]
+    assert 84 * FRAME_SECONDS >= 3.75 - lines.SECTION_EARLY > 83 * FRAME_SECONDS
+    state = track.opened(a_song(), a_clock())
+    assert edit_track._windows_of(state, "other words") is None, "times for other words are not these"
+    assert edit_track._windows_of(None, lines.heard_text(LYRICS)) is None
+    bare = track.opened(a_song(score_text="", settings={"cot": "off"}), None)
+    assert edit_track._windows_of(bare, lines.heard_text(LYRICS)) is None, "no score, no sections"
+    sheet = notation.read(RAP)
+    by_the_mix = grid.Grid(offset=0.5, rate=1.0, tick=grid.tick_seconds(sheet),
+                           starts=grid.starts_of(sheet), by_voice=False)
+    assert edit_track._windows_of(track.opened(a_song(), by_the_mix),
+                                  lines.heard_text(LYRICS)) is None, (
+        "bars the voice did not place may be seconds off, and sections would be heard there")
+
+
+def test_a_section_an_edit_did_not_reach_is_not_heard_again(torch, monkeypatch):
+    """A take is the song with a few seconds laid into it, and the rest of it is the same samples.
+
+    The second sound has other samples in the chorus alone; the third has
+    two frames more in the verse, so its chorus is the first one's, two
+    frames later.
+    """
+    calls = []
+    lined(monkeypatch, calls)
+    windows = the_windows()
+    song = a_ramp(torch)
+    first = edit_track._heard_by_sections(PLACE, "", "song", song, RATE, windows, None, None, set())
+    assert [text for _key, text, _fill in calls] == [VERSE, CHORUS]
+    assert [word for word, _start, _stop in first] == SUNG.split()
+    assert first[0][1] == pytest.approx(84 * FRAME_SECONDS) and first[6][1] == pytest.approx(
+        184 * FRAME_SECONDS), "each section's words are counted from where its stretch opens"
+    take = song.clone()
+    take[..., 300 * SAMPLES_A_FRAME:310 * SAMPLES_A_FRAME] += 1.0
+    again = edit_track._heard_by_sections(PLACE, "", "take", take, RATE, windows, None, None, set())
+    assert [text for _key, text, _fill in calls] == [VERSE, CHORUS, CHORUS], "the verse was not"
+    assert again == first
+    cut = 100 * SAMPLES_A_FRAME
+    longer = torch.cat([song[..., :cut], torch.full((1, 2, 2 * SAMPLES_A_FRAME), 9.0),
+                        song[..., cut:]], dim=-1)
+    moved = [(84, 194, VERSE), (186, FRAMES + 2, CHORUS)]
+    later = edit_track._heard_by_sections(PLACE, "", "longer", longer, RATE, moved, None, None, set())
+    assert [text for _key, text, _fill in calls] == [VERSE, CHORUS, CHORUS, VERSE], "the chorus was not"
+    assert later[6][1] == pytest.approx(186 * FRAME_SECONDS), "and its words went with it"
+
+
+def test_a_section_never_heard_cannot_be_timed_without_the_aligner(torch, monkeypatch):
+    calls = []
+    lined(monkeypatch, calls)
+    windows = the_windows()
+    song = a_ramp(torch)
+    assert edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None, set()) is None
+    found = edit_track._heard_by_sections(PLACE, "", "song", song, RATE, windows, None, None, set())
+    assert edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None,
+                                         set()) == found, "heard once, it needs nobody"
+    assert len(calls) == 2
+
+
+def test_new_sections_are_separated_in_one_pass_and_timed_on_the_voice(torch, monkeypatch):
+    """The separator costs seconds where the aligner costs tenths, so it runs once for all it is asked."""
+    calls, asked = [], []
+    lined(monkeypatch, calls)
+
+    def voice_parts(samples, rate, spans, settings, progress):
+        asked.append(list(spans))
+        return [torch.full((high - low,), 7.0) for low, high in spans]
+
+    monkeypatch.setattr(edit_track, "_voice_parts", voice_parts)
+    edit_track._heard_by_sections(PLACE, "", "song", a_ramp(torch), RATE, the_windows(),
+                                  {"device": "cuda"}, None, set())
+    assert asked == [[(84 * SAMPLES_A_FRAME, 192 * SAMPLES_A_FRAME),
+                      (184 * SAMPLES_A_FRAME, FRAMES * SAMPLES_A_FRAME)]]
+    assert [fill for _key, _text, fill in calls] == [7.0, 7.0], "the voice, not the song as mixed"
+
+
+def test_without_the_separator_the_sections_are_timed_on_the_song_as_mixed(torch, monkeypatch):
+    """'download' off and no separator on the machine: ten lines in a hundred worse, not no lines."""
+    calls = []
+    lined(monkeypatch, calls)
+    found = edit_track._heard_by_sections(PLACE, "", "song", a_wave(torch, fill=0.3), RATE,
+                                          the_windows(), {"device": "cuda"}, None, set())
+    assert [fill for _key, _text, fill in calls] == [0.3, 0.3] and len(found) == 8
+
+
+def test_the_voice_a_grid_was_measured_by_is_the_one_its_words_are_timed_on(torch, monkeypatch):
+    """Measuring a grid separates the whole voice; the words are timed straight after, and not on a second pass."""
+    pytest.importorskip("torchaudio")
+    from yue2_comfy.asr import runtime as asr_runtime
+
+    heard = []
+    monkeypatch.setattr(edit_track, "_aligner_at_hand", lambda settings: PLACE)
+    monkeypatch.setattr(edit_track, "_voice_parts",
+                        lambda *args, **kwargs: pytest.fail("the voice was separated again"))
+
+    def word_times(folder, reader, device, waveform, rate, text, key, progress=None,
+                   cancelled=None, low_vram=False):
+        heard.append((text, rate, round(waveform.shape[-1] / rate, 2), round(float(waveform[0]), 2)))
+        return [(word, 0.5 * index, 0.5 * index + 0.4) for index, word in enumerate(text.split())]
+
+    monkeypatch.setattr(asr_runtime, "word_times", word_times)
+    edit_track._voice_keep("a song", a_wave(torch, fill=0.5), RATE)
+    edit_track._heard_by_sections(PLACE, "a song", "song", a_ramp(torch), RATE, the_windows(), None,
+                                  None, set())
+    assert heard == [(VERSE, 16000, 4.32, 0.5), (CHORUS, 16000, 13.64, 0.5)]
+    edit_track.unload()
+    assert not edit_track._WHOLE_VOICES, "the voice goes when the memory is asked back"
+
+
+def test_the_separated_stretches_come_back_without_the_seconds_around_them(torch, monkeypatch):
+    """Each stretch goes to the separator with a second of the song on each side and a second of silence after."""
+    from yue2_comfy import devices, download
+    from yue2_comfy.vocals import runtime as vocal_runtime
+
+    given, gone = [], []
+    monkeypatch.setattr(edit_track, "_voice_parts", VOICE_PARTS)
+    monkeypatch.setattr(download, "ensure_vocals", lambda settings, progress=None: "weights")
+    monkeypatch.setattr(devices, "resolve", lambda spec: "card")
+    monkeypatch.setattr(vocal_runtime, "unload", lambda: gone.append(1))
+
+    def separate(path, device, waveform, rate, progress=None, cancelled=None):
+        given.append((path, device, tuple(waveform.shape)))
+        return waveform * 2.0
+
+    monkeypatch.setattr(vocal_runtime, "separate", separate)
+    samples = a_ramp(torch, 200)[0]
+    spans = [(0, 2 * RATE), (4 * RATE, 5 * RATE)]
+    found = edit_track._voice_parts(samples, RATE, spans, {"device": "auto"}, None)
+    assert given == [("weights", "card", (1, 2, (3 + 1 + 3 + 1) * RATE))]
+    assert [tuple(clip.shape) for clip in found] == [(2 * RATE,), (RATE,)]
+    assert torch.equal(found[0], samples[0, :2 * RATE] * 2.0)
+    assert torch.equal(found[1], samples[0, 4 * RATE:5 * RATE] * 2.0)
+    assert gone == [1]
+    edit_track._voice_parts(samples, RATE, spans, {"device": "auto", "keep_model_loaded": True}, None)
+    assert gone == [1], "a run that keeps what it loads keeps the separator"
+
+
+def a_reader(monkeypatch, lost, calls):
+    """The aligner stood in: ``lost`` says, by the lines it is given, how many stamps of each word came back out of order."""
+    from yue2_comfy.asr import aligner, runtime as asr_runtime
+
+    def word_times(folder, reader, device, waveform, rate, text, key, progress=None,
+                   cancelled=None, low_vram=False):
+        calls.append(text)
+        found = aligner.Times((word, 0.5 * index, 0.5 * index + 0.4)
+                              for index, word in enumerate(text.split()))
+        found.lost = tuple(lost.get(text, [0] * len(found)))
+        return found
+
+    monkeypatch.setattr(asr_runtime, "word_times", word_times)
+
+
+def test_a_section_that_comes_back_out_of_order_is_heard_again_with_the_one_before(torch, monkeypatch):
+    """The model sang a verse's first line on the phrase left over at the end of the chorus before it.
+
+    The verse's own stretch then holds three of its four lines, and the
+    aligner, given four, answers with its stamps out of order. Heard with
+    the section before, the line is where it is sung: ahead of its section.
+    """
+    calls = []
+    a_reader(monkeypatch, {CHORUS: [2, 0]}, calls)
+    windows = the_windows()
+    song = a_ramp(torch)
+    found = edit_track._heard_by_sections(PLACE, "", "song", song, RATE, windows, None, None, set())
+    assert calls == [VERSE, CHORUS, VERSE + "\n" + CHORUS]
+    assert [word for word, _start, _stop in found] == SUNG.split()
+    opens = 84 * FRAME_SECONDS
+    assert found[6][1] == pytest.approx(opens + 3.0), (
+        "the chorus has the times of the stretch it shared, which opens where the verse does")
+    assert found[5][1] == pytest.approx(opens + 2.5), "and the verse keeps its own"
+    assert edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None,
+                                         set()) == found, "known by both stretches, it is not heard again"
+    take = song.clone()
+    take[..., 100 * SAMPLES_A_FRAME:110 * SAMPLES_A_FRAME] += 1.0
+    edit_track._heard_by_sections(PLACE, "", "take", take, RATE, windows, None, None, set())
+    assert calls[3:] == [VERSE, CHORUS, VERSE + "\n" + CHORUS], (
+        "the stretch before it changed, so what was heard across both is heard again")
+
+
+def test_a_section_heard_no_better_with_the_one_before_keeps_its_own_times(torch, monkeypatch):
+    """Words that ran so far ahead that no hearing finds them come back out of order either way."""
+    calls = []
+    a_reader(monkeypatch, {CHORUS: [2, 0], VERSE + "\n" + CHORUS: [0, 0, 0, 0, 0, 0, 1, 1]}, calls)
+    found = edit_track._heard_by_sections(PLACE, "", "song", a_ramp(torch), RATE, the_windows(), None,
+                                          None, set())
+    assert calls == [VERSE, CHORUS, VERSE + "\n" + CHORUS]
+    assert found[6][1] == pytest.approx(184 * FRAME_SECONDS)
+
+
+def test_a_section_read_well_enough_is_not_heard_twice(torch, monkeypatch):
+    calls = []
+    a_reader(monkeypatch, {VERSE: [2, 2, 2, 0, 0, 0], CHORUS: [0, 0]}, calls)
+    edit_track._heard_by_sections(PLACE, "", "song", a_ramp(torch), RATE, the_windows(), None, None, set())
+    assert calls == [VERSE, CHORUS], "the first section has none before it, and the second read every stamp"
+    assert edit_track._unread([("a", 0.0, 0.4)]) == 0.0, "times that do not say are taken as read"
+
+
+def test_word_times_kept_before_sections_were_heard_are_heard_again(stand, monkeypatch, tmp_path):
+    """Until 0.13.0 a song was heard in one pass, which loses its place in a long one."""
+    from yue2_comfy.inpaint import lines
+
+    monkeypatch.setattr(songs, "_store", songs.Store(str(tmp_path)))
+    name = songs.remember(stand.wave, RATE, stand.song)
+    text = lines.heard_text(LYRICS)
+    old = [(word, 30.0 + index, 30.4 + index) for index, word in enumerate(text.split())]
+    edit_track._times_keep(name, text, old)
+    assert edit_track._times_read(name, text) == old, "a song with no sections still reads them"
+    assert edit_track._times_read(name, text, sections=True) is None
+    calls = []
+    lined(monkeypatch, calls)
+    assert payload(run(stand))["lines"] == LINES
+    assert [said for _key, said, _fill in calls] == [VERSE, CHORUS]
+    kept = json.loads((tmp_path / (name + edit_track.WORDS_SUFFIX)).read_text(encoding="utf-8"))
+    assert kept["heard"] == edit_track.BY_SECTIONS
+    assert edit_track._times_read(name, text, sections=True) is not None
+
+
+def test_times_read_beside_a_song_say_which_of_its_sections_are_known(torch, monkeypatch):
+    """So a take sung on a song opened from the disk hears only what its edit reached."""
+    calls = []
+    lined(monkeypatch, calls)
+    windows = the_windows()
+    song = a_ramp(torch)
+    times = [(word, start, start + 0.4) for word, start in heard_at()]
+    edit_track._parts_learn(song, RATE, windows, times)
+    found = edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None, set())
+    assert [(word, round(start, 3)) for word, start, _stop in found] == [
+        (word, round(start, 3)) for word, start in heard_at()]
+    monkeypatch.setattr(edit_track, "_PARTS", type(edit_track._PARTS)())
+    ahead = times[:6] + [("seven", 6.0, 6.4), ("eight", 7.5, 7.9)]
+    edit_track._parts_learn(song, RATE, windows, ahead)
+    found = edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None, set())
+    assert found[6][1] == pytest.approx(6.0), (
+        "a section that begins in the stretch before its own is known by both of them")
+    monkeypatch.setattr(edit_track, "_PARTS", type(edit_track._PARTS)())
+    edit_track._parts_learn(song, RATE, windows, times[:6] + [("seven", 1.0, 1.4), ("eight", 7.5, 7.9)])
+    assert edit_track._heard_by_sections(None, "", "song", song, RATE, windows, None, None,
+                                         set()) is None, "words that lie in neither are heard when asked for"
+
+
+def test_a_song_whose_sections_cannot_be_paired_is_heard_in_one_pass(torch, monkeypatch):
+    """Four sections of words on a score that sings in three: nothing says where each is sung."""
+    words = "[Verse]\none two\n\n[Chorus]\nthree four\n\n[Verse]\nfive six\n\n[Chorus]\nseven eight"
+    wave = a_wave(torch, fill=0.4)
+    songs.remember(wave, RATE, a_song(lyrics=words))
+    monkeypatch.setattr(edit_track, "_GRIDS", type(edit_track._GRIDS)())
+    monkeypatch.setattr(edit_track, "_grid_of", lambda *args, **kwargs: a_clock())
+    calls = []
+    lined(monkeypatch, calls)
+    drawn = payload(edit_track.YuE2EditTrack().edit({"waveform": wave, "sample_rate": RATE}, takes=2))
+    assert [text for _key, text, _fill in calls] == ["one two\nthree four\nfive six\nseven eight"]
+    assert drawn["lines"] == [[1, 0.0, 0.9], [4, 1.0, 1.9], [7, 2.0, 2.9], [10, 3.0, 3.9]]
+
+
+def test_a_song_with_no_score_is_heard_in_one_pass(torch, monkeypatch):
+    wave = a_wave(torch, fill=0.6)
+    songs.remember(wave, RATE, a_song(score_text="", settings={"cot": "off"}))
+    calls = []
+    lined(monkeypatch, calls)
+    drawn = payload(edit_track.YuE2EditTrack().edit({"waveform": wave, "sample_rate": RATE}, takes=2))
+    assert [text for _key, text, _fill in calls] == [VERSE + "\n" + CHORUS]
+    assert drawn["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9]]

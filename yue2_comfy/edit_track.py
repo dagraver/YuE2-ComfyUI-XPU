@@ -499,13 +499,75 @@ def _voice_level(sound, rate: int, windows, settings, label: str, progress):
 WORDS_SUFFIX = ".words.json"
 """Where the word times of a song wait for the next session, beside the song they were measured on.
 
-Timing a song reads 1.84 GB of weights and makes one pass over the whole
-recording; the answer never changes, a song being remembered under the key of
-its own samples, and what it is worth is exactly the second and third line
-somebody rewrites. The words they were measured on are written with them, so a
-song whose words an edit has changed is timed again rather than read wrong. A
-song that went on writes the second its new lines were timed from as well
-(``_went_times``), and one timed whole before that is timed again."""
+Timing a song reads 1.84 GB of weights and separates its voice; the answer
+never changes, a song being remembered under the key of its own samples, and
+what it is worth is exactly the second and third line somebody rewrites. The
+words they were measured on are written with them, so a song whose words an
+edit has changed is timed again rather than read wrong. A song that went on
+writes the second its new lines were timed from as well (``_went_times``),
+and one timed whole before that is timed again. A song heard a section at a
+time says so (``BY_SECTIONS``), and one that can be heard so and was not is
+timed again: until 0.13.0 every song was heard in one pass, which put 68 line
+starts in 100 on their phrases against 94 (``inpaint.lines``)."""
+
+BY_SECTIONS = "sections"
+"""What a file of word times says under "heard" when its song was heard a section at a time."""
+
+_PARTS = collections.OrderedDict()
+"""When the words of a section are sung, counted from where its stretch opens, by the samples of that stretch and its lines.
+
+A take is the song it was made on with a few seconds laid into it
+(``core.laid``), so every section its edit did not reach is in it sample for
+sample, moved by whole frames at most, and is not heard twice. What that
+saves is the separator: on 2026-10-12 it took 7 seconds on a song of 193 and
+11 on one of 312, where the aligner took 0.3 and 0.7 over all of either."""
+
+_PARTS_KEEP = 512
+
+PART_SLACK = 0.1
+"""Seconds a word read beside a song may lie outside its section's stretch: a step of the aligner's clock and a little."""
+
+PART_UNREAD = 0.2
+"""The share of a section's time stamps out of order past which it is heard again with the section before it.
+
+A section's stretch opens where its score says its singing does, and the
+model does not always sing it there: with a phrase to spare at the end of a
+chorus it sang the next verse's first line on it, 6.7 seconds ahead of the
+verse, in all four songs sung on one ballad's score for the words-under-notes
+stand. The verse's stretch then holds three of its four lines, the aligner is
+given four, and it says so itself: 23 to 54 stamps in 100 came back out of
+order (``asr.aligner.Times``), where the 118 sections of the stand's 28
+songs had 7 in 100 at the median and nine sections in ten under 16. Heard in
+one stretch with the chorus before, the verse came back with 0 to 14 in 100
+and its first line where it is sung.
+
+Measured on 2026-10-12 with no score in it -- Qwen3-ASR told the language,
+hearing each line of the 28 songs where the times put it, 2300 words: 1731
+of them heard for one pass over the whole song as mixed, 1889 for every
+section alone, 1912 with this, and 1915 with every section heard twice, once
+with each neighbour, which put 12 fewer lines on their phrases. Five sections
+were heard again, the four verses and a last section of a kept song, and each
+gained words."""
+
+PART_BETTER = 0.1
+"""How much smaller that share has to be when a section is heard with the one before it for those times to be taken.
+
+Four more sections passed ``PART_UNREAD`` on the stand and were left as they
+were. Three read worse with the section before, two of them in a song whose
+words ran so far ahead that no hearing found them; the fourth read 6 stamps
+in 100 better and was heard singing 5 of its 16 words that way where it sang
+8 alone."""
+
+_WHOLE_VOICES = collections.OrderedDict()
+"""The separated voice of the songs whose grids were measured this session, by song key: mono at the aligner's 16 kHz.
+
+Measuring a grid separates the whole voice, and the song's words are timed
+on that voice straight after; kept so, a song of five minutes is 19 MB."""
+
+_WHOLE_KEEP = 2
+
+SEPARATING_SHARE = 0.8
+"""Of the bar's share for timing a song's words, what separating the voice takes; the aligner has the rest."""
 
 NO_WORDS = ("Nothing is sung in this song's words, so there is no line to rewrite. Select the "
             "bars to sing instead.")
@@ -669,6 +731,7 @@ def unload() -> None:
     """
     RESULTS.clear()
     _GRIDS.clear()
+    _WHOLE_VOICES.clear()
 
 
 def _temp_folder():
@@ -931,6 +994,7 @@ def _grid_of(name: str, song, waveform, rate: int, settings, unique_id, progress
     path = separator_weights(settings, unique_id, progress)
     voice = voice_of({"waveform": waveform, "sample_rate": rate}, settings, unique_id, progress,
                      path=path)["waveform"]
+    _voice_keep(name, voice, rate)
     began = time.perf_counter()
     clock = grid.measured(sheet, waveform, rate, voice=voice)
     log.info("[yue2_comfy.edit_track] the score sits on this song from %.2f s at %.4f of its tempo, "
@@ -958,12 +1022,15 @@ def _said(text: str) -> str:
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
 
 
-def _times_read(name: str, text: str, since=None):
+def _times_read(name: str, text: str, since=None, sections: bool = False):
     """The word times measured for this song in some other session, or None. Never fatal.
 
     ``since`` is the second a song that went on has its new lines timed from,
     and times read for it must say they were measured so: a song timed whole
-    before it was known to lose those lines is timed again.
+    before it was known to lose those lines is timed again. ``sections`` says
+    the song can be heard a section at a time, and times read for it must say
+    they were: the ones kept before that were heard in one pass over the
+    whole song, which loses its place in a long one (``lines.sections``).
     """
     path = _words_file(name)
     if path is None:
@@ -975,6 +1042,8 @@ def _times_read(name: str, text: str, since=None):
             return None
         if since is not None and kept.get("from") != round(float(since), 3):
             return None
+        if sections and kept.get("heard") != BY_SECTIONS:
+            return None
         return [(str(word), float(start), float(stop)) for word, start, stop in kept["times"]]
     except (OSError, ValueError, KeyError, TypeError):
         log.debug("[yue2_comfy.edit_track] %s cannot be read and the words are timed again", path,
@@ -982,8 +1051,12 @@ def _times_read(name: str, text: str, since=None):
         return None
 
 
-def _times_keep(name: str, text: str, times, since=None) -> None:
-    """Write the word times beside their song, and ``since`` when the new lines were timed from there. Never fatal: they only save time."""
+def _times_keep(name: str, text: str, times, since=None, sections: bool = False) -> None:
+    """Write the word times beside their song. Never fatal: they only save time.
+
+    ``since`` is written when the new lines were timed from there, and
+    ``sections`` when the song was heard a section at a time.
+    """
     path = _words_file(name)
     if path is None:
         return
@@ -992,6 +1065,8 @@ def _times_keep(name: str, text: str, times, since=None) -> None:
                       for word, start, stop in times]}
     if since is not None:
         kept["from"] = round(float(since), 3)
+    if sections:
+        kept["heard"] = BY_SECTIONS
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8") as handle:
@@ -999,6 +1074,312 @@ def _times_keep(name: str, text: str, times, since=None) -> None:
     except OSError:
         log.debug("[yue2_comfy.edit_track] the word times could not be written to %s", path,
                   exc_info=True)
+
+
+def _band(progress, low: float, high: float):
+    """A share of a bar that may not be there: None stays None."""
+    return None if progress is None else Band(progress, low, high)
+
+
+def _plain(sound):
+    """A sound as ``[channels, samples]`` float32 on the CPU, which is how its sections are cut and known."""
+    import torch
+
+    samples = sound[0] if sound.dim() == 3 else sound
+    return samples.detach().to(device="cpu", dtype=torch.float32)
+
+
+def _windows_of(state, text: str):
+    """``[(first frame, stop frame, lines)]`` for the sections the words ``text`` of a song are heard in, or None when it is heard whole.
+
+    ``lines.sections`` on the song as ``state`` describes it, each stretch
+    on whole frames: an edit moves what comes after it by whole frames, so a
+    section it did not reach is the same samples in a take as in the song
+    the take was made on, and is known by them (``_PARTS``). A stretch opens
+    on the frame after where ``lines.sections`` has it, never before: the
+    earlier it opens, the more often its first word is put on the playing
+    (``lines.SECTION_EARLY``). None for a song with no score, for one whose
+    lyrics cannot be paired with its score's sections, and when the
+    sections' lines are not ``text``. None too for a song whose bars the
+    separated voice did not place (``grid.Grid.by_voice``): the pitch
+    classes of the mix alone put one song's bars 14 seconds off, and
+    sections heard on such bars would be heard in the wrong seconds, where
+    one pass over the song asks nothing of them.
+    """
+    from .inpaint import lines
+
+    if state is None or state.sheet is None or state.clock is None or not str(text or "").strip():
+        return None
+    if not state.clock.by_voice:
+        return None
+    laid = grid.layout(state.sheet, state.clock, state.frames)["sections"]
+    found = lines.sections(state.lyrics, laid, state.frames * FRAME_SECONDS)
+    if not found or chr(10).join(said for _start, _stop, said in found) != text:
+        return None
+    return [(min(int(state.frames), int(math.ceil(start / FRAME_SECONDS - 1e-6))),
+             min(int(state.frames), int(math.ceil(stop / FRAME_SECONDS - 1e-6))), said)
+            for start, stop, said in found]
+
+
+def _marks(samples, rate: int, windows) -> list:
+    """``[first sample, stop sample, lines, key]`` for each of ``windows``; the key names the stretch by its samples and its lines."""
+    import hashlib
+
+    hop = rate * FRAME_SECONDS
+    found = []
+    for first, stop, said in windows:
+        low = int(round(first * hop))
+        high = max(low, min(int(samples.shape[-1]), int(round(stop * hop))))
+        digest = hashlib.blake2b(digest_size=16)
+        digest.update(samples[..., low:high].contiguous().numpy().data)
+        digest.update(said.encode("utf-8"))
+        found.append([low, high, said, digest.hexdigest()])
+    return found
+
+
+def _unread(times, first: int = 0, count=None) -> float:
+    """The share of the time stamps of ``count`` words from word ``first`` that came back out of order.
+
+    0.0 for times that do not say (``asr.aligner.Times.lost``), which is
+    every one read from a file or handed over by something else.
+    """
+    lost = list(getattr(times, "lost", None) or ())
+    chunk = lost[first:] if count is None else lost[first:first + count]
+    return sum(chunk) / (2.0 * len(chunk)) if chunk else 0.0
+
+
+def _pair_key(marks, index: int) -> str:
+    """The name the times of section ``index`` are kept by when it was heard with the section before it: both stretches' keys."""
+    return marks[index - 1][3] + "+" + marks[index][3]
+
+
+def _part_keep(key: str, times) -> list:
+    """Keep the word times of one section, counted from where its stretch opens, and hand them back."""
+    kept = [(str(word), float(start), float(stop)) for word, start, stop in times]
+    _PARTS[key] = kept
+    _PARTS.move_to_end(key)
+    while len(_PARTS) > _PARTS_KEEP:
+        _PARTS.popitem(last=False)
+    return kept
+
+
+def _parts_learn(sound, rate: int, windows, times) -> None:
+    """Remember a song's sections by their sound, from the word times read beside it.
+
+    A take sung on the song this session then hears only the sections its
+    edit reached. A section whose words begin in the stretch before its own
+    was heard with that one (``_heard_after``) and is remembered by both. One
+    whose words lie in neither is left out and heard when it is asked for:
+    a grid measured again may have moved it. Never fatal.
+    """
+    try:
+        at = 0
+        marks = _marks(_plain(sound), rate, windows)
+        for index, (low, high, said, key) in enumerate(marks):
+            count = len(said.split())
+            chunk = times[at:at + count]
+            at += count
+            opens, closes = low / float(rate), high / float(rate)
+            if len(chunk) != count or any(float(stop) > closes + PART_SLACK
+                                          for _word, _start, stop in chunk):
+                continue
+            first = min(float(start) for _word, start, _stop in chunk)
+            if first < opens - PART_SLACK:
+                if not index or first < marks[index - 1][0] / float(rate) - PART_SLACK:
+                    continue
+                key = _pair_key(marks, index)
+            _part_keep(key, [(word, float(start) - opens, float(stop) - opens)
+                             for word, start, stop in chunk])
+    except Exception:
+        log.debug("[yue2_comfy.edit_track] the sections of a song timed before were not "
+                  "remembered", exc_info=True)
+
+
+def _voice_keep(name: str, voice, rate: int) -> None:
+    """Keep the separated voice a song's grid was measured by, for the timing of its words. Never fatal."""
+    try:
+        from .asr import model
+
+        _WHOLE_VOICES[name] = model.mono_16k(voice, rate)
+        _WHOLE_VOICES.move_to_end(name)
+        while len(_WHOLE_VOICES) > _WHOLE_KEEP:
+            _WHOLE_VOICES.popitem(last=False)
+    except Exception:
+        log.debug("[yue2_comfy.edit_track] the separated voice was not kept", exc_info=True)
+
+
+def _voice_parts(samples, rate: int, spans, settings, progress) -> list:
+    """The separated voice of the ``(first sample, stop sample)`` stretches of ``samples``, mono, in one pass.
+
+    Each stretch is separated with ``VOICE_CONTEXT`` of the song on each side
+    of it and a second of silence before the next, as ``_voices_in`` lays
+    them, and comes back without that margin. The separator is let go
+    afterwards unless the run keeps what it loads. Raises what looking for
+    the separator raises when it is not on the machine.
+    """
+    import torch
+
+    from . import devices, download
+    from .vocals import runtime as vocal_runtime
+
+    path = download.ensure_vocals(settings, progress)
+    around = int(VOICE_CONTEXT * rate)
+    gap = torch.zeros((samples.shape[0], rate), dtype=torch.float32)
+    parts, placed, at = [], [], 0
+    for low, high in spans:
+        first, last = max(0, low - around), min(int(samples.shape[-1]), high + around)
+        parts += [samples[:, first:last], gap]
+        placed.append((at + low - first, high - low))
+        at += last - first + rate
+    try:
+        voice = vocal_runtime.separate(path, devices.resolve(settings["device"]),
+                                       torch.cat(parts, dim=-1)[None], rate, progress=progress,
+                                       cancelled=interrupted)[0].mean(0)
+    finally:
+        if not settings.get("keep_model_loaded"):
+            vocal_runtime.unload()
+    return [voice[start:start + length] for start, length in placed]
+
+
+def _voices_of(name: str, samples, rate: int, spans, settings, progress) -> list:
+    """What to hear each ``(first sample, stop sample)`` stretch of a song in: ``[(samples, rate)]``, its voice where that can be had.
+
+    The voice the song's grid was measured by, when ``name`` is that song
+    and the voice is still held (``_WHOLE_VOICES``); otherwise the stretches
+    are separated now. Without the separator -- not on the machine and
+    'download' off, or no settings to find it by -- each stretch is the song
+    as it is mixed, which the measurement in ``lines`` found right ten lines
+    in a hundred less often. Never fatal but for a cancel.
+    """
+    from . import download
+
+    whole = _WHOLE_VOICES.get(name) if name else None
+    if whole is not None:
+        from .asr import prompt
+
+        per = prompt.SAMPLE_RATE / float(rate)
+        if abs(int(whole.shape[-1]) - int(samples.shape[-1]) * per) <= prompt.SAMPLE_RATE:
+            return [(whole[int(low * per):int(math.ceil(high * per))], prompt.SAMPLE_RATE)
+                    for low, high in spans]
+    voiced = None
+    if settings is not None:
+        try:
+            voiced = _voice_parts(samples, rate, spans, settings, progress)
+        except InterruptedError:
+            raise
+        except (FileNotFoundError, download.DownloadError):
+            log.info("[yue2_comfy.edit_track] the voice separator is not on this machine, so the "
+                     "words are timed on the song as it is mixed")
+        except Exception:
+            log.warning("[yue2_comfy.edit_track] the voice could not be separated, so the words "
+                        "are timed on the song as it is mixed", exc_info=True)
+    if voiced is None:
+        return [(samples[..., low:high], rate) for low, high in spans]
+    return [(clip, rate) for clip in voiced]
+
+
+def _heard_after(place, name: str, samples, rate: int, marks, index: int, settings, alone: float):
+    """The times of section ``index`` heard in one stretch with the section before it, or None when that reads no better.
+
+    Counted from where the section's own stretch opens, so a line sung ahead
+    of it has times below zero. ``alone`` is the share of its stamps that
+    came back out of order when it was heard alone; see ``PART_UNREAD`` and
+    ``PART_BETTER``.
+    """
+    from .asr import runtime as asr_runtime
+
+    folder, reader, device, low_vram = place
+    low, high = marks[index - 1][0], marks[index][1]
+    before, said = marks[index - 1][2], marks[index][2]
+    clip, clip_rate = _voices_of(name, samples, rate, [(low, high)], settings, None)[0]
+    times = asr_runtime.word_times(folder, reader, device, clip, clip_rate, before + chr(10) + said,
+                                   ("sections", _pair_key(marks, index)), None, interrupted,
+                                   low_vram=low_vram)
+    ahead, count = len(before.split()), len(said.split())
+    if len(times) != ahead + count:
+        return None
+    together = _unread(times, ahead, count)
+    if together > alone - PART_BETTER:
+        return None
+    log.info("[yue2_comfy.edit_track] a section came back with %.0f%% of its time stamps out of "
+             "order and %.0f%% heard with the section before it, so it is timed there",
+             100.0 * alone, 100.0 * together)
+    shift = (low - marks[index][0]) / float(rate)
+    return [(word, shift + start, shift + stop) for word, start, stop in times[ahead:]]
+
+
+def _heard_by_sections(place, name: str, label: str, sound, rate: int, windows, settings,
+                       progress, listened):
+    """One ``(word, start, stop)`` for each word of a song, its sections heard one at a time; None when one cannot be.
+
+    ``windows`` is what ``_windows_of`` found for the song. A section whose
+    stretch was heard before -- in this sound or in the one it was made on
+    -- is not heard again (``_PARTS``); the rest have their voice separated
+    (``_voices_of``) and are given to the aligner in ``place`` with their own
+    lines. One that comes back badly out of order is heard again with the
+    section before it (``PART_UNREAD``, ``_heard_after``), and is then known
+    by both stretches. None when a section has to be heard and the aligner
+    is not at hand.
+    """
+    from .asr import runtime as asr_runtime
+
+    samples = _plain(sound)
+    marks = _marks(samples, rate, windows)
+    known = {}
+    for index, (_low, _high, _said, key) in enumerate(marks):
+        for name_of in ([key] if not index else [key, _pair_key(marks, index)]):
+            found = _PARTS.get(name_of)
+            if found is not None:
+                _PARTS.move_to_end(name_of)
+                known[index] = found
+                break
+    missing = [index for index in range(len(marks)) if index not in known]
+    if missing:
+        if place is None:
+            return None
+        folder, reader, device, low_vram = place
+        began = time.perf_counter()
+        clips = _voices_of(name, samples, rate, [(marks[index][0], marks[index][1])
+                                                 for index in missing],
+                           settings, _band(progress, 0.0, SEPARATING_SHARE))
+        listened.add("aligner")
+        for at, index in enumerate(missing):
+            _low, _high, said, key = marks[index]
+            clip, clip_rate = clips[at]
+            share = (1.0 - SEPARATING_SHARE) / len(missing)
+            times = asr_runtime.word_times(
+                folder, reader, device, clip, clip_rate, said, ("section", key),
+                _band(progress, SEPARATING_SHARE + share * at, SEPARATING_SHARE + share * (at + 1)),
+                interrupted, low_vram=low_vram)
+            alone = _unread(times)
+            together = None
+            if index and alone >= PART_UNREAD:
+                together = _heard_after(place, name, samples, rate, marks, index, settings, alone)
+            known[index] = (_part_keep(key, times) if together is None
+                            else _part_keep(_pair_key(marks, index), together))
+        log.info("[yue2_comfy.edit_track] %d of the %d sections of %s heard for their words in "
+                 "%.1f s", len(missing), len(marks), label[:8], time.perf_counter() - began)
+    found = []
+    for index, (low, _high, _said, _key) in enumerate(marks):
+        opens = low / float(rate)
+        found.extend((word, opens + start, opens + stop) for word, start, stop in known[index])
+    return found
+
+
+def _after(prior, step, take):
+    """The song one take of an edit makes of ``prior``, or None when that cannot be worked out.
+
+    Its bars and its length are the take's own, which is where its sections
+    are heard; without them it is heard whole.
+    """
+    try:
+        return track.after(prior, step, take.count,
+                           take.song.score if step.kind in track.WRITTEN else None,
+                           getattr(take, "sung", ()))
+    except Exception:
+        log.debug("[yue2_comfy.edit_track] the bars of a take could not be worked out, so it is "
+                  "heard whole", exc_info=True)
+        return None
 
 
 def _flagged(take) -> bool:
@@ -1448,7 +1829,8 @@ class YuE2EditTrack:
                     elif step.kind in ("retake", "notes") and ears is not None:
                         found_by = opens + (closes - opens) * TIMES_SHARE
                         asked = self._words_there(place, state, step, sound, rate, name, history,
-                                                  Band(progress, opens, found_by), listened, went)
+                                                  Band(progress, opens, found_by), listened, went,
+                                                  settings)
                         opens = found_by
                     hears = closes - (closes - opens) * HEARD_SHARE if asked else closes
                     entry = self._sung(loaded, current, sound, state, step, edit, made,
@@ -1483,7 +1865,7 @@ class YuE2EditTrack:
                     shown = (step, ordered, pick, made, prior, seeds, earlier, entry)
                     before = {"label": track.sound_name(name, history[:-1]),
                               "disk": name if len(history) == 1 else "", "sound": earlier,
-                              "lyrics": prior.lyrics}
+                              "lyrics": prior.lyrics, "state": prior}
                     if step.kind == "extend":
                         for take in ordered:
                             if take is not None and take.song is not None:
@@ -1513,7 +1895,7 @@ class YuE2EditTrack:
                     place = _aligner_at_hand(settings)
                 if place is not None:
                     timed = self._timed(place, name, keyed, history, shown, sound, rate, state,
-                                        Band(progress, top, 1.0), listened, went)
+                                        Band(progress, top, 1.0), listened, went, settings)
         except InterruptedError:
             translate_interrupt()
             raise
@@ -1556,8 +1938,9 @@ class YuE2EditTrack:
         The score knows a note for every syllable but not which line the
         singer was on, and the grid's sections are whole verses, so a line is
         placed by hearing it: the forced aligner is given the words and says
-        when each is sung. It reads the song once, the answer is kept beside
-        the song, and the region opens at the last word of the line before --
+        when each is sung. It hears the song a section at a time
+        (``_heard_by_sections``), the answer is kept beside the song, and the
+        region opens at the last word of the line before --
         the model sings that word again and runs into the new line, which is
         what the stand measured as the difference between every word sung and
         a line that starts late. A song this run made go on is timed as
@@ -1571,7 +1954,8 @@ class YuE2EditTrack:
         if not text.strip():
             raise _Refused("{}: {}".format(where, NO_WORDS))
         listened = set() if listened is None else listened
-        times = self._times_of(None, sound, saved, waveform, rate, text, progress, listened, went)
+        times = self._times_of(None, sound, saved, waveform, rate, text, progress, listened, went,
+                               state, settings)
         if times is None:
             try:
                 folder = download.ensure_aligner(settings, progress)
@@ -1581,7 +1965,8 @@ class YuE2EditTrack:
             began = time.perf_counter()
             times = self._times_of((folder, reader, devices.resolve(settings["device"]),
                                     bool(settings.get("low_vram"))), sound,
-                                   saved, waveform, rate, text, progress, listened, went)
+                                   saved, waveform, rate, text, progress, listened, went,
+                                   state, settings)
             log.info("[yue2_comfy.edit_track] %d words timed in %.1f s", len(times),
                      time.perf_counter() - began)
         try:
@@ -1592,7 +1977,7 @@ class YuE2EditTrack:
                 state.frames if stop is None else int(round(stop / FRAME_SECONDS)))
 
     def _words_there(self, place, state, step, sound, rate: int, name: str, history, progress,
-                     listened, went=None) -> str:
+                     listened, went=None, settings=None) -> str:
         """The words the song sings in the stretch a retake sings again, or "" when they cannot be known.
 
         They are what the takes are heard against, and only the song's own
@@ -1613,7 +1998,7 @@ class YuE2EditTrack:
         try:
             times = self._times_of(place, track.sound_name(name, history),
                                    name if not history else "", sound, rate, text, progress,
-                                   listened, went)
+                                   listened, went, state, settings)
         except InterruptedError:
             raise
         except Exception:
@@ -1696,7 +2081,7 @@ class YuE2EditTrack:
                  "" if len(fresh) == 1 else "s", time.perf_counter() - began)
 
     def _timed(self, place, name: str, keyed: str, history, shown, sound, rate: int, state,
-               progress, listened, went=None) -> dict:
+               progress, listened, went=None, settings=None) -> dict:
         """When each sung line is sung, in every sound the window can put on the track.
 
         ``{"song": lines, "takes": {index: lines}, "before": lines}``, where
@@ -1707,27 +2092,30 @@ class YuE2EditTrack:
         length, the one kept being the song itself. The song as it was comes
         numbered as the lines after the edit, which a change of words may have
         moved (``lines.carried``). A song this run made go on, and each of its
-        takes, is timed as ``_went_times`` says.
+        takes, is timed as ``_went_times`` says. Each sound goes with the
+        song it is -- its own bars and length, a take's being its own
+        (``_after``) -- which is what says where its sections are heard.
         """
         from .inpaint import lines
 
         found = {"song": None, "takes": {}, "before": None}
-        jobs = [("song", None, sound, state.lyrics, track.sound_name(name, history), keyed)]
+        jobs = [("song", None, sound, state.lyrics, track.sound_name(name, history), keyed, state)]
         if shown is not None:
             step, ordered, pick, earlier, prior = shown[0], shown[1], shown[2], shown[6], shown[4]
             edit = history[-1][0]
             for index, take in enumerate(ordered):
                 if take is not None and index != pick:
                     jobs.append(("takes", index, take.waveform, state.lyrics,
-                                 track.sound_name(name, history[:-1] + [(edit, take.seed)]), ""))
+                                 track.sound_name(name, history[:-1] + [(edit, take.seed)]), "",
+                                 _after(prior, step, take)))
             if not _one_take(step):
                 jobs.append(("before", None, earlier, prior.lyrics,
                              track.sound_name(name, history[:-1]),
-                             name if len(history) == 1 else ""))
-        for at, (where, index, waveform, lyrics, label, disk) in enumerate(jobs):
+                             name if len(history) == 1 else "", prior))
+        for at, (where, index, waveform, lyrics, label, disk, song) in enumerate(jobs):
             spans = self._lines_of(place, label, disk, waveform, rate, lyrics,
                                    Band(progress, at / len(jobs), (at + 1) / len(jobs)), listened,
-                                   went)
+                                   went, song, settings)
             if where == "takes":
                 found["takes"][index] = spans
             else:
@@ -1742,13 +2130,14 @@ class YuE2EditTrack:
         return found
 
     def _lines_of(self, place, label: str, disk: str, waveform, rate: int, lyrics: str,
-                  progress, listened, went=None):
+                  progress, listened, went=None, state=None, settings=None):
         """``[[line, start, stop]]`` for every sung line of ``lyrics`` in ``waveform``, or None.
 
         ``label`` names the sound for this session and ``disk`` the song whose
         file keeps its times between sessions -- "" for a take that no song is
-        remembered by. Never fatal but for a cancel: the lines are a picture,
-        and a song that cannot be timed is still the song.
+        remembered by. ``state`` is the song that sound is, for hearing it a
+        section at a time. Never fatal but for a cancel: the lines are a
+        picture, and a song that cannot be timed is still the song.
         """
         from .inpaint import lines
 
@@ -1757,7 +2146,7 @@ class YuE2EditTrack:
             return []
         try:
             times = self._times_of(place, label, disk, waveform, rate, text, progress, listened,
-                                   went)
+                                   went, state, settings)
             if times is None:
                 return None
             return [[number, round(start, 3), round(stop, 3)]
@@ -1770,7 +2159,7 @@ class YuE2EditTrack:
             return None
 
     def _times_of(self, place, label: str, disk: str, waveform, rate: int, text: str, progress,
-                  listened, went=None):
+                  listened, went=None, state=None, settings=None):
         """The aligner's ``(word, start, stop)`` for ``text`` in ``waveform``; None when they cannot be had.
 
         Read beside the song ``disk`` names when it was timed on these words
@@ -1778,6 +2167,14 @@ class YuE2EditTrack:
         there. ``label`` names the sound for this session's own memory of
         times, so a sound timed once in a run is not timed twice. Without the
         aligner at hand and with nothing on the disk, there is nothing to say.
+
+        ``state`` is the song the sound is. With its score and its bars the
+        song is heard a section at a time (``_windows_of``,
+        ``_heard_by_sections``), with the separator ``settings`` finds; a
+        song with no score, with lyrics its score's sections cannot be
+        paired with, or with bars the voice did not place, is heard in one
+        pass as it is mixed.
+
         A sound ``went`` names is a song going on, timed as ``_went_times``
         says, or a song whose sections moved, whose words keep the times they
         had and go with their sound (``lines.carried_along``), stretched over
@@ -1786,26 +2183,35 @@ class YuE2EditTrack:
         from .asr import runtime as asr_runtime
         from .inpaint import lines
 
+        windows = _windows_of(state, text)
         record = (went or {}).get(label)
         if record is not None and "pieces" in record:
             said = lines.heard_text(record["lyrics"])
             earlier = self._times_of(place, record["label"], record["disk"], record["sound"], rate,
-                                     said, progress, listened, went)
+                                     said, progress, listened, went, record.get("state"), settings)
             times = None if earlier is None else lines.carried_along(earlier, said,
                                                                      record["pieces"], text)
             if times is not None:
                 times = lines.stretched(times, record.get("sung", ()))
                 if disk:
-                    _times_keep(disk, text, times)
+                    _times_keep(disk, text, times, sections=windows is not None)
                 return times
         elif record is not None:
             old = lines.heard_text(record["lyrics"])
             added = lines.added_after(old, text)
             if added is not None:
                 return self._went_times(place, label, disk, waveform, rate, text, old, added,
-                                        record, progress, listened, went)
-        times = _times_read(disk, text) if disk else None
-        if times is None and place is not None:
+                                        record, progress, listened, went, windows is not None,
+                                        settings)
+        times = _times_read(disk, text, sections=windows is not None) if disk else None
+        if times is not None and windows is not None:
+            _parts_learn(waveform, rate, windows, times)
+        elif times is None and windows is not None:
+            times = _heard_by_sections(place, disk, label, waveform, rate, windows, settings,
+                                       progress, listened)
+            if times is not None and disk:
+                _times_keep(disk, text, times, sections=True)
+        elif times is None and place is not None:
             folder, reader, device, low_vram = place
             listened.add("aligner")
             times = asr_runtime.word_times(folder, reader, device, waveform, rate, text, label,
@@ -1815,7 +2221,8 @@ class YuE2EditTrack:
         return times
 
     def _went_times(self, place, label: str, disk: str, waveform, rate: int, text: str, old: str,
-                    added: str, record, progress, listened, went):
+                    added: str, record, progress, listened, went, sections: bool = False,
+                    settings=None):
         """The word times of a song going on: the song before it for its old lines, the new part for the new ones.
 
         ``record`` holds the ``label``, ``disk``, ``sound`` and ``lyrics`` of
@@ -1828,18 +2235,20 @@ class YuE2EditTrack:
         repeating the old outro's, came back lit six seconds early, and a
         ballad's chorus sung again came back inside the first one. None when
         the aligner is not at hand and the times are not beside the song.
+        ``sections`` says the song can be heard a section at a time, as the
+        song before it then was, and is what its times are kept and read by.
         """
         from .asr import runtime as asr_runtime
         from .inpaint import lines
 
         since = record["since"]
-        times = _times_read(disk, text, since) if disk else None
+        times = _times_read(disk, text, since, sections) if disk else None
         if times is not None:
             return times
         halves = (None, None) if progress is None else (Band(progress, 0.0, 0.5),
                                                         Band(progress, 0.5, 1.0))
         earlier = self._times_of(place, record["label"], record["disk"], record["sound"], rate,
-                                 old, halves[0], listened, went)
+                                 old, halves[0], listened, went, record.get("state"), settings)
         if earlier is None:
             return None
         found, first = [], 0
@@ -1854,7 +2263,7 @@ class YuE2EditTrack:
                                            low_vram=low_vram)
         times = lines.went_on(earlier, found, first / rate)
         if disk:
-            _times_keep(disk, text, times, since)
+            _times_keep(disk, text, times, since, sections)
         return times
 
     def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band):
