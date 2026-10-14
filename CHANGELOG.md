@@ -7,6 +7,29 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.13.2 - 2026-10-14
+
+### Added
+
+- **Taller rows in the score editor.** The roll's `-` and `+` zoomed in time
+  only, and on a large screen the note names and the words under the notes
+  stayed small. A second pair beside them, marked with an up-down arrow,
+  makes the rows taller or lower, from 8 to 48 pixels in eleven steps, and
+  Alt+wheel does the same with the note under the pointer kept in place. The
+  note names, the words and the names on the keyboard grow with the rows;
+  rows lower than the old ones leave the note names to the keyboard. The
+  browser remembers the height for every score window. At the old height the
+  roll is drawn exactly as before. See
+  [The score editor](README.md#the-score-editor).
+
+### Changed
+
+- **The grid list on the roll's toolbar keeps its width.** On a score written
+  in sixteenth notes it offers `Thirty-second notes (rewrites the score)`, and
+  the closed list grew to that length, about 100 pixels more than the grids
+  themselves need. It is now as wide as its longest grid and opens in full,
+  so the toolbar with the new buttons takes no more room than it did.
+
 ## 0.13.1 - 2026-10-12
 
 ### Fixed

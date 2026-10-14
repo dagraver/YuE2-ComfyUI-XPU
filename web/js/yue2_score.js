@@ -57,6 +57,7 @@ const SHOW_WORDS_TOOLTIP =
     + "anything is sung. A line with more or fewer syllables than notes is drawn in amber, with a dash "
     + "under each note left without a syllable; the count at the top right names those lines. Zoomed far "
     + "out, the words are hidden.";
+const ROW_HEIGHT_KEY = "yue2.score.rowHeight";
 const WORDS_WIRED =
     "The lyrics come in through a wire, so this window has not seen them yet. Run the workflow once and "
     + "the words are drawn under the notes.";
@@ -80,7 +81,6 @@ const SECTION_H = 16;
 const BAR_H = 30;
 const RULER_H = SECTION_H + BAR_H;
 const CHORD_H = 24;
-const ROW_H = 14;
 const EDGE_PX = 7;
 const CHORD_BOX_W = 150;
 const CHANGED_RED = "#C0392B";
@@ -374,11 +374,15 @@ const SCORE_STYLE = `
     color: var(--descrip-text, #bbb); user-select: none; }
 .yue2-score select.yue2-s-sound { font-size: 11px; padding: 2px 4px; margin-left: -1px;
     max-width: 96px; }
+.yue2-score select.yue2-s-snap { max-width: 150px; }
 .yue2-score button.yue2-s-on:hover { background: #4A8BE3; border-color: #4A8BE3; }
 .yue2-s-seg { display: inline-flex; }
 .yue2-score .yue2-s-seg button { border-radius: 0; margin-left: -1px; }
 .yue2-score .yue2-s-seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
 .yue2-score .yue2-s-seg button:last-child { border-radius: 0 6px 6px 0; }
+.yue2-s-axis { box-sizing: border-box; display: inline-flex; align-items: center; padding: 0 7px;
+    font-size: 13px; color: var(--descrip-text, #999); border: 1px solid var(--border-color, #4e4e4e);
+    border-radius: 6px 0 0 6px; user-select: none; cursor: help; }
 .yue2-s-tempo { font-size: 12px; display: inline-flex; gap: 6px; align-items: center;
     color: var(--descrip-text, #bbb); user-select: none; }
 .yue2-s-tempo input[type="range"] { width: 120px; margin: 0; accent-color: #3B7DD8; }
@@ -669,6 +673,23 @@ function rememberShowWords(shown) {
     }
 }
 
+function rememberedRowHeight() {
+    try {
+        return roll.rowHeight(window.localStorage.getItem(ROW_HEIGHT_KEY));
+    } catch (error) {
+        void error;
+        return roll.ROW_HEIGHT;
+    }
+}
+
+function rememberRowHeight(height) {
+    try {
+        window.localStorage.setItem(ROW_HEIGHT_KEY, String(height));
+    } catch (error) {
+        void error;
+    }
+}
+
 function lyricsOf(node, track) {
     if (track) {
         return typeof track.lyrics === "string" && track.lyrics.trim()
@@ -877,6 +898,12 @@ function checkControl(label, checked, title) {
     return { holder, box };
 }
 
+function axisLabel(arrow, title) {
+    const label = element("span", "yue2-s-axis", arrow);
+    label.title = title;
+    return label;
+}
+
 class ScoreEditor {
     constructor(node, track = null) {
         this.track = track;
@@ -928,6 +955,7 @@ class ScoreEditor {
         this.tick0 = 0;
         this.pxPerTick = 4;
         this.pitchTop = 79;
+        this.rowH = rememberedRowHeight();
         this.pianoWait = false;
         this.width = 0;
         this.height = 0;
@@ -1026,11 +1054,24 @@ class ScoreEditor {
         this.showPart();
         this.snapHolder = element("span");
         const zoomOut = element("button", "", "\u2212");
-        zoomOut.title = "Zoom out (Ctrl + wheel).";
+        zoomOut.title = "Narrower bars, more of the song in view (Ctrl + wheel).";
         zoomOut.addEventListener("click", () => this.zoom(1 / 1.4));
         const zoomIn = element("button", "", "+");
-        zoomIn.title = "Zoom in (Ctrl + wheel).";
+        zoomIn.title = "Wider bars (Ctrl + wheel).";
         zoomIn.addEventListener("click", () => this.zoom(1.4));
+        const across = element("span", "yue2-s-seg");
+        across.append(axisLabel("\u2194", "Zoom in time: how wide a bar is."), zoomOut, zoomIn);
+        const rowsDown = element("button", "", "\u2212");
+        rowsDown.title = "Lower rows, more notes in view (Alt + wheel).";
+        rowsDown.addEventListener("click", () => this.zoomRows(-1));
+        const rowsUp = element("button", "", "+");
+        rowsUp.title = "Taller rows: bigger notes, note names and words (Alt + wheel).";
+        rowsUp.addEventListener("click", () => this.zoomRows(1));
+        this.rowButtons = [rowsDown, rowsUp];
+        this.showRowButtons();
+        const upDown = element("span", "yue2-s-seg");
+        upDown.append(axisLabel("\u2195", "Zoom in pitch: how tall a row is. Kept for the next time."),
+            rowsDown, rowsUp);
         const fit = element("button", "", "Whole song");
         fit.title = "Fit the whole song into the window.";
         fit.addEventListener("click", () => {
@@ -1072,7 +1113,7 @@ class ScoreEditor {
             return button;
         });
         this.rollTools.append(this.partHolder, this.repeats.holder, this.wordsCheck.holder, this.snapHolder,
-            this.barsHolder, zoomOut, zoomIn, fit,
+            this.barsHolder, across, upDown, fit,
             this.undoButton, this.redoButton, element("span", "yue2-s-gap"), clipTools, element("span", "yue2-s-gap"),
             pitch);
         tools.appendChild(this.rollTools);
@@ -1358,15 +1399,19 @@ class ScoreEditor {
         if (px * this.sheet.per_quarter < WORD_ZOOM) return;
         const notes = roll.inOrder(model.notes.Vocal);
         const top = RULER_H + CHORD_H;
-        const fonts = ["10px system-ui, sans-serif", "600 10px system-ui, sans-serif"];
+        const rowH = this.rowH;
+        const size = roll.rowTextSizes(rowH).word;
+        const grown = size / 10;
+        const room = Math.round(WORD_ROOM * grown);
+        const fonts = [size + "px system-ui, sans-serif", "600 " + size + "px system-ui, sans-serif"];
         const fontOf = (index, line) => fonts[laid.lines[line].first === index ? 1 : 0];
         c.save();
         c.textBaseline = "alphabetic";
         const places = roll.wordPlaces(notes, laid.notes, {
-            from: first - WORD_ROOM / px,
+            from: first - room / px,
             to: lastTick,
-            room: WORD_ROOM,
-            least: WORD_LEAST,
+            room,
+            least: Math.round(WORD_LEAST * grown),
             x: (tick) => Math.round(this.x(tick)) + 0.5,
             width: (text, index, line) => {
                 c.font = fontOf(index, line);
@@ -1375,24 +1420,25 @@ class ScoreEditor {
         });
         for (const place of places) {
             const rowY = this.y(place.pitch);
-            if (rowY + ROW_H < top || rowY > this.height) continue;
+            if (rowY + rowH < top || rowY > this.height) continue;
             c.fillStyle = SKIN.wordBack;
-            c.fillRect(place.left - 0.5, rowY, place.width, ROW_H - 1);
+            c.fillRect(place.left - 0.5, rowY, place.width, rowH - 1);
             c.save();
             c.beginPath();
-            c.rect(place.left - 0.5, rowY, place.width - 1, ROW_H);
+            c.rect(place.left - 0.5, rowY, place.width - 1, rowH);
             c.clip();
             c.font = fontOf(place.index, place.line);
             c.fillStyle = laid.lines[place.line].kind === "fit" ? SKIN.word : SKIN.wordOff;
-            c.fillText(place.text, place.left + 2.5, rowY + ROW_H - 4);
+            c.fillText(place.text, place.left + 2.5, roll.textBaseline(rowY, rowH - 1, size));
             c.restore();
         }
         c.fillStyle = SKIN.wordOff;
+        const dash = Math.max(2, Math.round(rowH / 7));
         for (const index of laid.spare) {
             const note = notes[index];
             if (!note || note.start > lastTick || note.start + note.length < first) continue;
-            c.fillRect(Math.round(this.x(note.start)) + 1.5, this.y(note.pitch - 1) + 5,
-                Math.max(3, Math.min(Math.round(note.length * px) - 3, 9)), 2);
+            c.fillRect(Math.round(this.x(note.start)) + 1.5, this.y(note.pitch - 1) + Math.round((rowH * 5) / 14),
+                Math.max(3, Math.min(Math.round(note.length * px) - 3, Math.round(9 * grown))), dash);
         }
         c.restore();
     }
@@ -1788,7 +1834,7 @@ class ScoreEditor {
         this.snap = preferred ? preferred.ticks : 1;
         const options = choices.map((choice) => [String(choice.ticks), choice.name]);
         if (sheet.unit < roll.FINEST && !this.track) options.push([FINER, FINER_LABEL]);
-        this.snapHolder.replaceChildren(selectControl(options, String(this.snap),
+        const list = selectControl(options, String(this.snap),
             "The grid notes snap to while drawing, moving and stretching.", (value) => {
                 if (value === FINER) {
                     this.finerGrid();
@@ -1796,7 +1842,9 @@ class ScoreEditor {
                 }
                 this.snap = Number(value);
                 this.draw();
-            }));
+            });
+        list.className = "yue2-s-snap";
+        this.snapHolder.replaceChildren(list);
     }
 
     fillBars() {
@@ -1878,7 +1926,7 @@ class ScoreEditor {
 
     fitView() {
         const span = roll.pitchSpan(this.model);
-        const rows = Math.max(8, Math.floor(((this.height || 520) - RULER_H - CHORD_H) / ROW_H));
+        const rows = Math.max(8, Math.floor(((this.height || 520) - RULER_H - CHORD_H) / this.rowH));
         const middle = Math.round((span.low + span.high) / 2);
         this.pitchTop = clamp(Math.max(span.high, middle + Math.floor(rows / 2)), roll.LOWEST + rows - 1, roll.HIGHEST);
         const shown = Math.min(this.sheet.bars.length, 8);
@@ -1906,7 +1954,7 @@ class ScoreEditor {
     }
 
     visibleRows() {
-        return Math.max(1, Math.floor((this.height - RULER_H - CHORD_H) / ROW_H));
+        return Math.max(1, Math.floor((this.height - RULER_H - CHORD_H) / this.rowH));
     }
 
     clampView() {
@@ -1946,6 +1994,25 @@ class ScoreEditor {
         this.draw();
     }
 
+    zoomRows(step, anchorPy) {
+        const height = roll.nextRowHeight(this.rowH, step);
+        if (height === this.rowH) return;
+        const top = RULER_H + CHORD_H;
+        const offset = Math.max(0, (anchorPy ?? top + ((this.height || 520) - top) / 2) - top);
+        this.pitchTop = roll.keptPitchTop(this.pitchTop, offset, this.rowH, height);
+        this.rowH = height;
+        rememberRowHeight(height);
+        this.showRowButtons();
+        this.clampView();
+        this.draw();
+    }
+
+    showRowButtons() {
+        const [lower, taller] = this.rowButtons;
+        lower.disabled = this.rowH === roll.ROW_HEIGHTS[0];
+        taller.disabled = this.rowH === roll.ROW_HEIGHTS[roll.ROW_HEIGHTS.length - 1];
+    }
+
     x(tick) {
         return KEYS_W + (tick - this.tick0) * this.pxPerTick;
     }
@@ -1955,11 +2022,11 @@ class ScoreEditor {
     }
 
     y(pitch) {
-        return RULER_H + CHORD_H + (this.pitchTop - pitch) * ROW_H;
+        return RULER_H + CHORD_H + (this.pitchTop - pitch) * this.rowH;
     }
 
     pitchAt(py) {
-        return this.pitchTop - Math.floor((py - RULER_H - CHORD_H) / ROW_H);
+        return this.pitchTop - Math.floor((py - RULER_H - CHORD_H) / this.rowH);
     }
 
     shownModel() {
@@ -1992,15 +2059,16 @@ class ScoreEditor {
         c.beginPath();
         c.rect(KEYS_W, top, W - KEYS_W, H - top);
         c.clip();
-        const rows = Math.ceil((H - top) / ROW_H) + 1;
+        const rowH = this.rowH;
+        const rows = Math.ceil((H - top) / rowH) + 1;
         for (let r = 0; r < rows; r++) {
             const pitch = this.pitchTop - r;
-            const rowY = top + r * ROW_H;
+            const rowY = top + r * rowH;
             c.fillStyle = roll.isBlack(pitch) ? SKIN.rowBlack : SKIN.rowWhite;
-            c.fillRect(KEYS_W, rowY, W - KEYS_W, ROW_H);
+            c.fillRect(KEYS_W, rowY, W - KEYS_W, rowH);
             if (((pitch % 12) + 12) % 12 === 0) {
                 c.fillStyle = SKIN.octave;
-                c.fillRect(KEYS_W, rowY + ROW_H - 1, W - KEYS_W, 1);
+                c.fillRect(KEYS_W, rowY + rowH - 1, W - KEYS_W, 1);
             }
         }
         const marked = new Set(this.changed.length ? this.changed : this.localChanged);
@@ -2068,7 +2136,7 @@ class ScoreEditor {
             const x0 = this.x(this.drag.tick);
             const x1 = this.x(this.drag.toTick);
             const y0 = this.y(Math.max(this.drag.pitch, this.drag.toPitch));
-            const y1 = this.y(Math.min(this.drag.pitch, this.drag.toPitch)) + ROW_H;
+            const y1 = this.y(Math.min(this.drag.pitch, this.drag.toPitch)) + rowH;
             c.strokeStyle = SKIN.box;
             c.lineWidth = 1;
             c.setLineDash([4, 3]);
@@ -2194,53 +2262,59 @@ class ScoreEditor {
             return;
         }
         const blackW = Math.round(KEYS_W * 0.6);
+        const rowH = this.rowH;
+        const size = roll.rowTextSizes(rowH).key;
         c.fillStyle = SKIN.keyWhite;
-        c.fillRect(0, top, KEYS_W, rows * ROW_H);
+        c.fillRect(0, top, KEYS_W, rows * rowH);
         for (let r = 0; r < rows; r++) {
             const pitch = this.pitchTop - r;
-            const rowY = top + r * ROW_H;
+            const rowY = top + r * rowH;
             const tone = ((pitch % 12) + 12) % 12;
             const black = roll.isBlack(pitch);
             const under = pitch === this.hoverPitch;
             if (black) {
                 c.fillStyle = SKIN.keyEdge;
-                c.fillRect(blackW, rowY + ROW_H / 2, KEYS_W - blackW, 1);
+                c.fillRect(blackW, rowY + rowH / 2, KEYS_W - blackW, 1);
                 c.fillStyle = under ? SKIN.keyBlackUnder : SKIN.keyBlack;
-                c.fillRect(0, rowY + 1, blackW, ROW_H - 2);
+                c.fillRect(0, rowY + 1, blackW, rowH - 2);
                 c.fillStyle = SKIN.keyBlackTop;
-                c.fillRect(blackW - 4, rowY + 3, 2, ROW_H - 6);
+                c.fillRect(blackW - 4, rowY + 3, 2, rowH - 6);
             } else {
                 if (under) {
                     c.fillStyle = SKIN.keyUnder;
-                    c.fillRect(0, rowY + 1, KEYS_W, ROW_H - 2);
+                    c.fillRect(0, rowY + 1, KEYS_W, rowH - 2);
                 }
                 if (tone === 0 || tone === 5) {
                     c.fillStyle = SKIN.keyEdge;
-                    c.fillRect(0, rowY + ROW_H - 1, KEYS_W, 1);
+                    c.fillRect(0, rowY + rowH - 1, KEYS_W, 1);
                 }
             }
             if (tone !== 0 && !under) continue;
-            c.font = (tone === 0 ? "600 " : "") + "10px system-ui, sans-serif";
+            const name = roll.noteName(pitch);
+            c.font = (tone === 0 ? "600 " : "") + size + "px system-ui, sans-serif";
             c.fillStyle = black ? SKIN.keyBlackText : tone === 0 ? SKIN.keyTextC : SKIN.keyText;
-            c.fillText(roll.noteName(pitch), black ? 5 : KEYS_W - 24, rowY + ROW_H - 3);
+            c.fillText(name, black ? 5 : Math.min(KEYS_W - 24, KEYS_W - 6 - c.measureText(name).width),
+                roll.textBaseline(rowY, rowH, size));
         }
     }
 
     drawKit(c, top, rows) {
+        const rowH = this.rowH;
+        const size = roll.rowTextSizes(rowH).kit;
         c.fillStyle = SKIN.keyWhite;
-        c.fillRect(0, top, KEYS_W, rows * ROW_H);
-        c.font = "9px system-ui, sans-serif";
+        c.fillRect(0, top, KEYS_W, rows * rowH);
+        c.font = size + "px system-ui, sans-serif";
         for (let r = 0; r < rows; r++) {
             const pitch = this.pitchTop - r;
-            const rowY = top + r * ROW_H;
+            const rowY = top + r * rowH;
             if (pitch === this.hoverPitch) {
                 c.fillStyle = SKIN.keyUnder;
-                c.fillRect(0, rowY + 1, KEYS_W, ROW_H - 2);
+                c.fillRect(0, rowY + 1, KEYS_W, rowH - 2);
             }
             c.fillStyle = SKIN.keyEdge;
-            c.fillRect(0, rowY + ROW_H - 1, KEYS_W, 1);
+            c.fillRect(0, rowY + rowH - 1, KEYS_W, 1);
             c.fillStyle = ((pitch % 12) + 12) % 12 === 0 ? SKIN.keyTextC : SKIN.keyText;
-            c.fillText(sounds.drumName(pitch), 4, rowY + ROW_H - 3);
+            c.fillText(sounds.drumName(pitch), 4, roll.textBaseline(rowY, rowH, size));
         }
     }
 
@@ -2251,33 +2325,36 @@ class ScoreEditor {
         const fill = blue ? SKIN.insNote : SKIN.note;
         const edge = blue ? SKIN.insEdge : SKIN.noteEdge;
         const text = blue ? SKIN.insText : SKIN.noteText;
+        const rowH = this.rowH;
+        const size = roll.rowTextSizes(rowH).note;
         c.save();
-        c.font = "600 9px system-ui, sans-serif";
+        c.font = "600 " + size + "px system-ui, sans-serif";
         c.lineWidth = 1;
         for (const note of model.notes[part]) {
             if (note.start + note.length < first || note.start > lastTick) continue;
             const noteY = this.y(note.pitch);
-            if (noteY + ROW_H < top || noteY > this.height) continue;
+            if (noteY + rowH < top || noteY > this.height) continue;
             const noteX = Math.round(this.x(note.start)) + 0.5;
             const width = Math.max(3, Math.round(note.length * px) - 1);
             if (ghost) {
-                this.box(c, noteX, noteY + 1.5, width, ROW_H - 3, SKIN.ghost, SKIN.ghostEdge);
+                this.box(c, noteX, noteY + 1.5, width, rowH - 3, SKIN.ghost, SKIN.ghostEdge);
                 continue;
             }
             const picked = this.selection.has(note.id);
-            this.box(c, noteX, noteY + 1.5, width, ROW_H - 3, picked ? SKIN.picked : fill,
+            this.box(c, noteX, noteY + 1.5, width, rowH - 3, picked ? SKIN.picked : fill,
                 picked ? SKIN.pickedEdge : edge);
             if (width > 5) {
                 c.fillStyle = SKIN.shine;
                 c.fillRect(noteX + 1.5, noteY + 2, width - 4, 1);
             }
+            if (size < roll.NOTE_TEXT_LEAST) continue;
             const bar = this.sheet.bars[roll.barAt(this.sheet, note.start)];
             const label = part === "Ins" && this.soundOf("Ins") === sounds.DRUMS
                 ? sounds.drumName(note.pitch)
                 : roll.noteName(note.pitch, roll.flatsIn(this.sheet, bar.key));
             if (c.measureText(label).width + 6 <= width) {
                 c.fillStyle = picked ? SKIN.pickedText : text;
-                c.fillText(label, noteX + 3, noteY + ROW_H - 4);
+                c.fillText(label, noteX + 3, roll.textBaseline(noteY, rowH, size));
             }
         }
         c.restore();
@@ -2297,8 +2374,10 @@ class ScoreEditor {
         const top = RULER_H + CHORD_H;
         const drag = this.drag;
         const picks = this.shownPicks();
+        const rowH = this.rowH;
+        const size = roll.rowTextSizes(rowH).note;
         c.save();
-        c.font = "600 9px system-ui, sans-serif";
+        c.font = "600 " + size + "px system-ui, sans-serif";
         c.lineWidth = 1;
         for (const span of roll.chordSpans(model, this.sheet.total)) {
             if (span.end < first || span.start > lastTick) continue;
@@ -2312,16 +2391,17 @@ class ScoreEditor {
             const bar = this.sheet.bars[roll.barAt(this.sheet, span.start)];
             for (const pitch of pitches) {
                 const noteY = this.y(pitch);
-                if (noteY + ROW_H < top || noteY > this.height) continue;
+                if (noteY + rowH < top || noteY > this.height) continue;
                 const fill = refused ? SKIN.refused : picked ? SKIN.picked : pitch === root ? SKIN.chordRoot : SKIN.chordNote;
                 const edge = refused ? SKIN.refusedEdge : picked ? SKIN.pickedEdge : SKIN.chordEdge;
-                this.box(c, noteX, noteY + 1.5, width, ROW_H - 3, fill, edge);
+                this.box(c, noteX, noteY + 1.5, width, rowH - 3, fill, edge);
+                if (size < roll.NOTE_TEXT_LEAST) continue;
                 const label = pitch === root ? span.name
                     : toned && pitch === drag.toPitch ? (drag.named || "?")
                     : roll.noteName(pitch, roll.flatsIn(this.sheet, bar.key));
                 if (c.measureText(label).width + 6 <= width) {
                     c.fillStyle = picked ? SKIN.pickedText : SKIN.chordText;
-                    c.fillText(label, noteX + 3, noteY + ROW_H - 4);
+                    c.fillText(label, noteX + 3, roll.textBaseline(noteY, rowH, size));
                 }
             }
         }
@@ -2993,8 +3073,14 @@ class ScoreEditor {
     wheel(event) {
         if (!this.sheet) return;
         event.preventDefault();
-        const { px } = this.local(event);
-        if (roll.modifiersOf(event).ctrl) {
+        const { px, py } = this.local(event);
+        const held = roll.modifiersOf(event);
+        if (held.alt) {
+            const delta = event.deltaY || event.deltaX;
+            if (delta) this.zoomRows(delta < 0 ? 1 : -1, py);
+            return;
+        }
+        if (held.ctrl) {
             this.zoom(event.deltaY < 0 ? 1.2 : 1 / 1.2, px);
             return;
         }

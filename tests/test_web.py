@@ -3396,6 +3396,74 @@ def test_words_outside_the_view_are_not_placed_and_none_is_wider_than_its_room()
 
 
 @needs_node
+def test_rows_grow_in_steps_and_the_first_step_draws_the_roll_as_before():
+    """A studio asked for taller rows to read the notes and the words on a big screen.
+
+    The remembered height is snapped to a known step, so a stored value from
+    another version cannot leave the roll at a size no button reaches. At the
+    default height every text is drawn at the size and on the line it had when
+    the height was a constant: notes 9 px four up from the row's foot, keys 10 px
+    three up, words 10 px on their 13 px box.
+    """
+    found = run_roll(
+        "const sizes = r.ROW_HEIGHTS.map((h) => [h, r.rowTextSizes(h)]);\n"
+        "console.log(JSON.stringify({heights: r.ROW_HEIGHTS, first: r.ROW_HEIGHT, least: r.NOTE_TEXT_LEAST,\n"
+        "  snapped: ['14', '13', null, '48', 'abc', 17, ''].map(r.rowHeight),\n"
+        "  steps: [[14, 1], [14, -1], [8, -1], [48, 1], [13, 1], [48, -20]].map(([h, s]) => r.nextRowHeight(h, s)),\n"
+        "  sizes, lines: [r.textBaseline(100, 14, 9), r.textBaseline(100, 14, 10), r.textBaseline(100, 13, 10)],\n"
+        "  inside: sizes.map(([h, s]) => [s.note, s.word, s.key, s.kit].map((size) => r.textBaseline(0, h, size)))}));")
+    heights = found["heights"]
+    assert heights == sorted(set(heights)) and found["first"] in heights
+    assert heights[0] <= 10 and heights[-1] >= 40, "the steps reach well below and well above the old height"
+    assert found["snapped"] == [14, 14, 14, 48, 14, 17, 14]
+    assert found["steps"] == [17, 12, 8, 48, 17, 8]
+    sizes = dict((height, size) for height, size in found["sizes"])
+    assert sizes[found["first"]] == {"note": 9, "word": 10, "key": 10, "kit": 9}
+    assert found["lines"] == [110, 111, 110]
+    for kind in ("note", "word", "key", "kit"):
+        grown = [sizes[height][kind] for height in heights]
+        assert grown == sorted(grown), kind + " text shrinks while the rows grow"
+        assert grown[-1] > grown[heights.index(found["first"])], kind + " text never grows"
+    for height, lines in zip(heights, found["inside"]):
+        assert all(0 < line <= height for line in lines), height
+    assert sizes[heights[0]]["note"] < found["least"] <= sizes[12]["note"], \
+        "notes are named from 12 px rows up; lower rows leave the names to the keyboard"
+
+
+@needs_node
+def test_a_row_zoom_keeps_the_row_under_the_pointer():
+    """The wheel zooms where the pointer is, as Ctrl+wheel does in time: the row under it stays under it."""
+    found = run_roll(
+        "const out = [];\n"
+        "for (const from of r.ROW_HEIGHTS) for (const to of r.ROW_HEIGHTS) for (let offset = 0; offset < 700; offset += 7) {\n"
+        "  const top = r.keptPitchTop(79, offset, from, to);\n"
+        "  out.push([79 - Math.floor(offset / from), top - Math.floor(offset / to)]);\n"
+        "}\n"
+        "console.log(JSON.stringify(out));")
+    assert found and all(before == after for before, after in found)
+
+
+def test_the_rows_are_zoomed_by_buttons_beside_the_time_zoom_and_by_alt_wheel():
+    """The person looked for it beside '-' and '+', so it sits there, and the roll has no fixed row height left."""
+    score = (WEB / "yue2_score.js").read_text(encoding="utf-8")
+    assert not re.search(r"\bROW_H\b", score), "a row drawn at a constant height would not follow the zoom"
+    assert "this.rowH = rememberedRowHeight();" in score
+    tools = score.split("this.rollTools.append(")[1].split(");")[0]
+    assert "across, upDown, fit" in tools
+    assert 'rowsDown.addEventListener("click", () => this.zoomRows(-1));' in score
+    assert 'rowsUp.addEventListener("click", () => this.zoomRows(1));' in score
+    wheel = score.split("    wheel(event) {")[1].split("\n    }\n")[0]
+    assert wheel.index("held.alt") < wheel.index("held.ctrl"), "AltGr reads as Ctrl too, so Alt is asked first"
+    assert "this.zoomRows(delta < 0 ? 1 : -1, py)" in wheel
+    zoom = score.split("    zoomRows(step, anchorPy) {")[1].split("\n    }\n")[0]
+    assert "roll.keptPitchTop(" in zoom and "rememberRowHeight(height);" in zoom and "this.clampView();" in zoom
+    assert 'const ROW_HEIGHT_KEY = "yue2.score.rowHeight";' in score
+    for name in ("function rememberedRowHeight(", "function rememberRowHeight("):
+        body = score.split(name)[1].split("\n}\n")[0]
+        assert "localStorage" in body and "catch" in body, name
+
+
+@needs_node
 def test_what_the_route_answers_is_what_the_window_draws():
     payload = laid_words("[Verse]\nla la la la la la la\nna na na na na\n")
     found = run_roll("const laid = r.wordsLaid({});\n"

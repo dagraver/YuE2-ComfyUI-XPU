@@ -33,6 +33,38 @@ export const FINEST = 32;
 export const LOWEST = 21;
 export const HIGHEST = 108;
 
+export const ROW_HEIGHT = 14;
+export const ROW_HEIGHTS = [8, 10, 12, 14, 17, 20, 24, 28, 34, 40, 48];
+export const NOTE_TEXT_LEAST = 7;
+
+export function rowHeight(value) {
+    const height = Number(value);
+    return ROW_HEIGHTS.includes(height) ? height : ROW_HEIGHT;
+}
+
+export function nextRowHeight(height, step) {
+    const at = ROW_HEIGHTS.indexOf(rowHeight(height));
+    return ROW_HEIGHTS[Math.max(0, Math.min(ROW_HEIGHTS.length - 1, at + step))];
+}
+
+export function rowTextSizes(height) {
+    const scaled = (size, most) => Math.min(most, Math.round((size * height) / ROW_HEIGHT));
+    return {
+        note: scaled(9, 22),
+        word: Math.max(7, scaled(10, 24)),
+        key: Math.max(7, scaled(10, 16)),
+        kit: Math.max(7, scaled(9, 14)),
+    };
+}
+
+export function textBaseline(top, height, size) {
+    return top + height - Math.round((height - size * 0.72) / 2);
+}
+
+export function keptPitchTop(pitchTop, offset, from, to) {
+    return pitchTop - Math.floor(offset / from) + Math.floor(offset / to);
+}
+
 const SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 export const MAJOR_ROOTS = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];

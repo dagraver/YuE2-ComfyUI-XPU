@@ -300,15 +300,14 @@ canvas with three views of one score, and nothing is written to the node until
 Apply. Like the song editor's, the window is sized from its edges or fills the
 tab, and it never shrinks below what its toolbars need.
 
-<img src="docs/piano_roll.png" width="400" alt="The score editor over the canvas, titled Score -- YuE2 Generate Song, with the line The notes this node sings. Nothing is written to the node until Apply. On top the Piano roll, Notes and ABC tabs, and on the right Key Fm, 4/4, 98 BPM, 93 bars, 3:47 and, in amber, 23 of 33 lines fit. Under them Play and From start, the voice box ticked with synth beside it, instrument ticked with piano, chords ticked with strings, a Tempo slider with 98 in the box next to it, and a Key list on Fm. On the row below, the Voice, Instrument, Chords and Both switch with Voice lit, a ticked words box, an Eighth notes grid, Add bars..., the zoom buttons and Whole song, then Undo and Redo, Copy, Cut, Paste and Duplicate, and the -oct, -1, +1 and +oct buttons, all greyed out. The roll shows bars 72 to 79, the end of an interlude and a verse that starts at bar 72, with the chords Fm7 and Bb by turns and C7 at bar 79 on the lane under the bar numbers. The voice's notes are green and named where there is room -- Bb3, Ab3 and C4 in three phrases, then Ab4, Bb4 and C5 in a fourth, higher one -- with the instrument's notes faint behind them. Under each note stands a syllable of a Russian verse, on the row below the note or one row lower, the first syllable of each line bold and a word that goes on to the next note ending in a hyphen. The second and third lines are white; the first is amber, with a short amber dash under its last note, a C4 with no syllable; the fourth, the higher phrase, is amber as well. Under the roll a scroll slider, the line No changes. This is the score as it came in., the note on what YuE2 does with an edited melody, Back to the model's score and Save as MIDI... on the left, and Keep for new words ticked, Cancel and Apply on the right">
+<img src="docs/piano_roll.png" width="400" alt="The score editor over the canvas, titled Score -- YuE2 Generate Song, with the line The notes this node sings. Nothing is written to the node until Apply. On top the Piano roll, Notes and ABC tabs, and on the right Key Fm, 4/4, 98 BPM, 93 bars, 3:47 and, in amber, 23 of 33 lines fit. Under them Play and From start, the voice box ticked with synth beside it, instrument ticked with piano, chords unticked with strings, a Tempo slider with 98 in the box next to it, and a Key list on Fm. On the row below, the Voice, Instrument, Chords and Both switch with Voice lit, a ticked words box, an Eighth notes grid, Add bars..., two zoom pairs -- a left-right arrow with minus and plus, then an up-down arrow with minus and plus -- and Whole song, then Undo and Redo, Copy, Cut, Paste and Duplicate, and the -oct, -1, +1 and +oct buttons, all greyed out. The roll shows the end of a verse and bars 43 to 46, a chorus, with Fm7 and Bb by turns on the chord lane under the bar numbers. Its rows are taller than at first, so the keyboard's C4, C5, C6 and C7 stand far apart and the notes and their names are large. The voice's notes are green and named -- Eb5, F5 and Ab5 -- with a few of the instrument's notes faint in bar 44. Under each note stands a syllable of a Russian chorus on the row below it, the first syllable of each line bold and a word that goes on to the next note ending in a hyphen: two whole lines, the first starting on a pickup in the verse's last bar, and the first syllable of a third at the right edge">
 
-*The window on `YuE2 Generate Song` with the `Voice` part picked and `words`
-ticked: four lines of a Russian verse under the voice's notes, a syllable a
-note, with the instrument's notes faint behind. The second and third lines have
-a note for every syllable and are white. The first is amber, and the dash under
-the C4 that ends it marks a note left without a syllable; the fourth is amber
-too. The facts at the top right count the whole song: `23 of 33 lines fit`.
-Beside the tempo is the key list, and beside Apply, `Keep for new words`.*
+*The window on `YuE2 Generate Song` with the `Voice` part picked, `words`
+ticked and the rows made taller with the up-down pair: two lines of a Russian
+chorus under the voice's notes, a syllable a note, the first line starting on a
+pickup in the verse's last bar. Both lines have a note for every syllable and
+are white. The facts at the top right count the whole song:
+`23 of 33 lines fit`. Beside the tempo is the key list.*
 
 On `YuE2 Generate Song` the score to edit is the one the node wrote on its last
 run, so run it once first. The next run sings the edit instead of writing a
@@ -346,10 +345,13 @@ its own only when it is one.
   start a new section, and right-click it to move the play cursor, as the bar
   strip below it does. "Add bars" adds empty bars at the end, and an editor
   with no score at all offers one to start from.
-  Ctrl+wheel zooms and Ctrl+Z undoes. Play sounds the parts on a sampled
-  grand piano that ships with the pack -- recorded every three semitones, so no
-  note is stretched by more than one. It is a guide to the notes, not the song,
-  and nothing is fetched from the internet. Space starts and stops it, and so
+  The toolbar has two pairs of `-` and `+`: the first zooms in time, as
+  Ctrl+wheel does, and the second, marked with an up-down arrow, makes the
+  rows taller, as Alt+wheel does, with the note names and the words growing
+  with them; the browser remembers the height. Ctrl+Z undoes. Play sounds
+  the parts on a sampled grand piano that ships with the pack -- recorded
+  every three semitones, so no note is stretched by more than one. It is a
+  guide to the notes, not the song, and nothing is fetched from the internet. Space starts and stops it, and so
   does a double click: on the bar strip it plays from the bar you clicked, and
   on the roll it takes back the note the first click of the pair drew.
   The list beside each of `voice`, `instrument` and `chords` picks what that
