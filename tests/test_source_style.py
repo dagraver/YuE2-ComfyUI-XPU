@@ -28,10 +28,10 @@ SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "vendor", ".pytest_cache",
              "node_modules", "dist", "build", "locales"}
 """Vendored code is carried verbatim, so rewriting its punctuation would make
 the diff against upstream unreadable. Translations are exempt for the opposite
-reason: for README_RU.md, CHANGELOG_RU.md and locales/ the other alphabet is
-the whole point."""
+reason: for README_RU.md, README_ZH.md, CHANGELOG_RU.md and locales/ the other
+alphabet is the whole point."""
 
-TRANSLATED = {"README_RU.md", "CHANGELOG_RU.md"}
+TRANSLATED = {"README_RU.md", "README_ZH.md", "CHANGELOG_RU.md"}
 
 DIRECTIVES = ("# noqa", "# pragma", "#!", "# type:", "# -*-")
 COMMENT_DIRS = ("yue2_comfy", "tests")

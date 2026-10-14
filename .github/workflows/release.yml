@@ -94,7 +94,7 @@ jobs:
             fi
           done
           for needed in __init__.py pyproject.toml requirements.txt \
-                        LICENSE NOTICE.md README.md README_RU.md \
+                        LICENSE NOTICE.md README.md README_RU.md README_ZH.md \
                         CHANGELOG.md CHANGELOG_RU.md \
                         locales/ru/main.json locales/ru/nodeDefs.json \
                         yue2_comfy/nodes.py yue2_comfy/constants.py \

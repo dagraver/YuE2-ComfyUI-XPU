@@ -4,7 +4,7 @@
 описание стиля и текст песни; на выходе -- читаемая партитура и готовая песня
 48 кГц стерео, целиком на вашей машине.
 
-[English](README.md) | [История изменений](CHANGELOG_RU.md)
+[English](README.md) | [中文版](README_ZH.md) | [История изменений](CHANGELOG_RU.md)
 
 <p align="center">
   <a href="https://github.com/pytraveler/YuE2-ComfyUI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pytraveler/YuE2-ComfyUI?display_name=tag"></a>

@@ -4,7 +4,7 @@ ComfyUI nodes for [YuE2-3B](https://huggingface.co/m-a-p/YuE2-3B). A style
 description and lyrics go in; a readable score and a complete 48 kHz stereo
 song come out, generated entirely on your own machine.
 
-[Russian version](README_RU.md) | [Changelog](CHANGELOG.md)
+[Russian version](README_RU.md) | [Chinese version](README_ZH.md) | [Changelog](CHANGELOG.md)
 
 <p align="center">
   <a href="https://github.com/pytraveler/YuE2-ComfyUI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/pytraveler/YuE2-ComfyUI?display_name=tag"></a>
