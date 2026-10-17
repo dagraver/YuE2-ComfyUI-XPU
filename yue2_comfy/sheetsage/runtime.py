@@ -19,6 +19,8 @@ import logging
 import os
 import threading
 
+from .. import devices
+
 log = logging.getLogger(__name__)
 
 KEEP_RESULTS = 8
@@ -55,24 +57,18 @@ def unload() -> None:
         mm.soft_empty_cache()
     except Exception:
         try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            devices.empty_cache()
         except Exception:
             log.debug("[yue2_comfy.sheetsage] no cache to empty", exc_info=True)
 
 
 def _free_bytes(device) -> int:
     """Free memory on the card, or a very large number when it cannot be read: nothing is evicted on a guess."""
-    try:
-        import torch
-
-        free, _total = torch.cuda.mem_get_info(device)
-        return int(free)
-    except Exception:
+    free = devices.free_bytes(device)
+    if free is None:
         log.debug("[yue2_comfy.sheetsage] could not check free memory", exc_info=True)
         return 1 << 62
+    return int(free)
 
 
 def _make_room(device) -> None:
@@ -81,7 +77,7 @@ def _make_room(device) -> None:
     A card with room to spare keeps everything where it is, so a cover made
     right after a song does not pay to reload the song model.
     """
-    if getattr(device, "type", "cpu") != "cuda":
+    if not devices.is_accelerator(device):
         return
     if _free_bytes(device) >= ROOM_BYTES:
         return

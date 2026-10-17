@@ -45,6 +45,11 @@ def test_the_grouped_cuda_call_is_the_one_that_is_widened():
     assert runtime._grouped(*trio())
 
 
+def test_the_grouped_intel_call_is_widened_as_well():
+    """An Intel card has no cuDNN to ask first, so its grouped call takes the widened path."""
+    assert runtime._grouped(*trio(device="xpu"))
+
+
 def test_nothing_else_is_touched():
     """Every other shape goes to upstream exactly as it arrived.
 
@@ -127,6 +132,32 @@ def test_a_refused_call_repeats_only_the_key_heads(monkeypatch):
     assert seen["v"].shape == (4, 16, 128) and seen["v"].repeats == (2, 1)
     assert seen["kwargs"] == {"causal": True, "backend": "sdpa"}
     assert len(runtime._REFUSED) == 1
+
+
+def test_an_intel_card_is_widened_without_cudnn_being_asked(monkeypatch):
+    """The grouped call is widened straight away, and nothing records a refusal that never happened."""
+    nar = pytest.importorskip("yue2_comfy.vendor.yue2.nar")
+    monkeypatch.setattr(runtime, "_REFUSED", set())
+    seen = {}
+
+    def recorder(q, k, v, **kwargs):
+        seen.update(q=q, k=k, v=v, kwargs=kwargs)
+        return "attended"
+
+    def refuses(*args, **kwargs):
+        raise AssertionError("cuDNN is a CUDA kernel and this card has no CUDA")
+
+    monkeypatch.setattr(runtime, "_only_grouped_kernel", refuses)
+    q, k, v = trio(device="xpu")
+    with swapped(nar, recorder):
+        with runtime.fused_attention():
+            assert nar.attention(q, k, v, causal=True, backend="sdpa") == "attended"
+
+    assert seen["q"] is q
+    assert seen["k"].shape == (4, 16, 128) and seen["k"].repeats == (2, 1)
+    assert seen["v"].shape == (4, 16, 128) and seen["v"].repeats == (2, 1)
+    assert seen["kwargs"] == {"causal": True, "backend": "sdpa"}
+    assert not runtime._REFUSED
 
 
 def test_a_refusal_is_remembered_for_that_shape_only(monkeypatch):
@@ -328,3 +359,14 @@ def test_another_thread_may_call_cuda_while_a_guarded_graph_records():
     thread.join()
     assert errors == []
     assert z.tolist() == [3.0] * 8
+
+
+def test_flash_is_not_claimed_where_there_is_no_cuda(monkeypatch):
+    """A build that compiled the kernel in still cannot run it without an NVIDIA card.
+
+    ``is_flash_attention_available`` reads a compile-time flag and answers True
+    on an Intel build, where the kernel it names can never run.
+    """
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert runtime.flash_attention_available() is False

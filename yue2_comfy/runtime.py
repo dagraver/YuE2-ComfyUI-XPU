@@ -260,12 +260,14 @@ def _only_grouped_kernel():
 def _grouped(q, k, v) -> bool:
     """Whether this call has the grouped-query shape the fused kernels refuse.
 
+    Asked of both accelerators: XPU has no cuDNN to try first, so its call goes
+    straight to the widened path below, which is exactly what the check is for.
     Anything else -- a wrong rank, mismatched K/V, a head count that does not
     divide -- is left exactly as upstream got it, so upstream raises its own
     error about it rather than a confusing one from here.
     """
     try:
-        if q.device.type != "cuda" or q.ndim != 3 or k.ndim != 3 or v.shape != k.shape:
+        if q.device.type not in ("cuda", "xpu") or q.ndim != 3 or k.ndim != 3 or v.shape != k.shape:
             return False
         heads, kv_heads = int(q.shape[1]), int(k.shape[1])
     except (AttributeError, IndexError, TypeError):
@@ -318,7 +320,10 @@ def fused_attention():
     The same trick, for the same reason, is what ComfyUI's own
     ``comfy/ops.py:scaled_dot_product_attention`` does for its models, and what
     upstream itself does on MPS two lines above the call this wraps. CUDA only
-    escaped it because the wheels upstream was written against had flash.
+    escaped it because the wheels upstream was written against had flash, and an
+    Intel card escapes it for the same reason MPS does: there is no cuDNN
+    attention to try first, so the group is repeated into the key heads and the
+    call is left to whatever fused kernel this XPU build carries.
 
     Upstream is not edited: ``CachedNAR`` looks the function up in its module
     when it runs, the way ``pinned_attention`` replaces GraphAR.
@@ -335,26 +340,27 @@ def fused_attention():
 
     def attention(q, k, v, **kwargs):
         """Upstream's attention: grouped through cuDNN, or with the group repeated into the key heads."""
+        card = getattr(getattr(q, "device", None), "type", "cpu")
         if _grouped(q, k, v):
-            key = _call_key(q, k, kwargs)
-            if key not in _REFUSED:
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        with _only_grouped_kernel():
-                            return original(q, k, v, **kwargs)
-                except RuntimeError as error:
-                    if not _is_refusal(error):
-                        raise
-                    if not _REFUSED:
-                        log.info("[yue2_comfy.runtime] cuDNN does not take the acoustic attention on this "
-                                 "card, so its K/V are widened for the efficient kernel instead")
-                    _REFUSED.add(key)
+            if card == "cuda":
+                key = _call_key(q, k, kwargs)
+                if key not in _REFUSED:
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore")
+                            with _only_grouped_kernel():
+                                return original(q, k, v, **kwargs)
+                    except RuntimeError as error:
+                        if not _is_refusal(error):
+                            raise
+                        if not _REFUSED:
+                            log.info("[yue2_comfy.runtime] cuDNN does not take the acoustic attention on this "
+                                     "card, so its K/V are widened for the efficient kernel instead")
+                        _REFUSED.add(key)
             groups = int(q.shape[1]) // int(k.shape[1])
             k = k.repeat_interleave(groups, dim=1)
             v = v.repeat_interleave(groups, dim=1)
-        device_type = getattr(getattr(q, "device", None), "type", "cpu")
-        with _fused_kernel(device_type):
+        with _fused_kernel(card):
             return original(q, k, v, **kwargs)
 
     nar.attention = attention
@@ -365,10 +371,20 @@ def fused_attention():
 
 
 def flash_attention_available() -> bool:
-    """Whether this torch build can actually run variable-length FlashAttention."""
+    """Whether this torch build can actually run variable-length FlashAttention.
+
+    Asked of CUDA as well as of the build.
+    ``torch.backends.cuda.is_flash_attention_available()`` answers True wherever
+    the kernel was compiled in, which includes an Intel build with no NVIDIA card
+    at all -- the module it is asked of exists in every build, and reads a
+    compile-time flag. The kernel is a CUDA one, so a machine without CUDA cannot
+    run it however it was compiled.
+    """
     try:
         import torch
 
+        if not torch.cuda.is_available():
+            return False
         return bool(torch.backends.cuda.is_flash_attention_available())
     except Exception:
         return False

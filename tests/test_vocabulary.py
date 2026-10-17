@@ -10,6 +10,8 @@ measured on a card and is recorded in the module.
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from yue2_comfy.vendor.yue2.protocol import (ABC_END, CODEC_OFFSET, CODEC_SIZE,
@@ -131,3 +133,21 @@ def test_only_off_keeps_the_tables_on_the_card():
 def test_tuning_a_model_without_tables_does_nothing():
     """Every mode calls tune; only some modes installed anything."""
     vocabulary.tune(object(), vocabulary.MUSIC, [1, 2, 3])
+
+
+def test_a_card_that_builds_no_graph_keeps_both_tables_whole():
+    """The window is switched on by the decode graph, and an Intel card builds none.
+
+    Nothing is replaced, so the tables reach the sampler as the checkpoint wrote
+    them and ``placement`` moves them with the half they belong to. The 1.41 GiB
+    the window would save is the whole of what is given up there.
+    """
+
+    class Device:
+        type = "xpu"
+
+    lm = types.SimpleNamespace(model=types.SimpleNamespace(embed_tokens="rows"), lm_head="head")
+    models = types.SimpleNamespace(lm=lm, device=Device())
+    with vocabulary.narrowed(models):
+        assert lm.model.embed_tokens == "rows"
+        assert lm.lm_head == "head"

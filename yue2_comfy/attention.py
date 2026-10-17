@@ -74,6 +74,10 @@ OLD_CARD_FAST = (
 NO_FAST = (
     "'fast' in the options needs a newer torch than this one. Choose 'sdpa'."
 )
+NO_CUDA = (
+    "'{name}' in the options is a CUDA kernel and needs an NVIDIA card; this run is on {where}. "
+    "Choose 'sdpa', which needs nothing and runs on every device."
+)
 
 
 def resolve(backend) -> str:
@@ -109,6 +113,20 @@ def _major(device):
         return None
 
 
+def _kind(device) -> str:
+    """How torch spells the accelerator a device name belongs to; 'cpu' when it names none.
+
+    Used to tell an Intel card from an NVIDIA one before a CUDA-only kernel is
+    promised: ``_major`` cannot answer, because there is no compute capability
+    to ask an XPU about. Reading the name needs no torch, so a call made before
+    torch is importable -- or in a test process that has none -- is still told
+    the accelerator its device string names.
+    """
+    from . import devices
+
+    return devices.kind_of(device)
+
+
 def engine_for(name: str, device, dtype=None):
     """The engine for ``name`` on ``device``, None for upstream's own call; ValueError when it cannot run here.
 
@@ -121,11 +139,20 @@ def engine_for(name: str, device, dtype=None):
     Read from torch's source on 2026-09-25 after a 20-series user's log; there
     is no such card here to run it on.
 
+    Both engines are CUDA kernels -- 'fast' is ``aten::_efficient_attention_forward``
+    and 'flash' is flash-attn -- so an Intel card is told to use 'sdpa' rather
+    than to install something that cannot run there. In practice no graph is
+    built on a non-CUDA device, so nothing asks this on XPU today; the refusal
+    is what keeps a card that never had these kernels from being promised them.
+
     'flash' is asked about the card before the package, so that an old card
     is told to use 'sdpa' rather than to install something that cannot run.
     """
     if name == SDPA:
         return None
+    where = _kind(device)
+    if name in (FAST, FLASH) and where != "cuda":
+        raise ValueError(NO_CUDA.format(name=name, where=where))
     major = _major(device)
     old = major is not None and major < 8
     if name == FAST:

@@ -151,6 +151,10 @@ def resolve_backend(backend: str) -> str:
     means CUDA, which is roughly twice as fast as Vulkan and roughly fifteen
     times the download. Anyone who would rather keep the 32 MB version can pick
     'vulkan' by name.
+
+    An Intel GPU has no CUDA at all, so 'auto' lands on Vulkan there, which is
+    the only GPU build upstream publishes for it; a SYCL build made by hand is
+    run as it is when it is named in YUE2_LLAMA_BIN.
     """
     backend = (backend or "auto").strip().lower()
     if backend and backend != "auto":

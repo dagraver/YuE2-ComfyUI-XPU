@@ -7,6 +7,51 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.11.0 - 2026-09-29
+
+### Added
+
+- **Intel GPUs (XPU).** Every question the pack asked a card was asked of CUDA,
+  and `device` could only spell a CUDA ordinal, so an Intel build could run
+  through `auto` and nothing else: `xpu:0` was refused at the queue, free memory
+  was never read, and every "is this a card?" test answered no. The questions are
+  now asked of the accelerator the device names. `torch.cuda` and `torch.xpu`
+  answer `is_available`, `device_count`, `get_device_name`, `mem_get_info`,
+  `memory_allocated`, `memory_reserved`, `empty_cache` and `synchronize` with the
+  same arguments, so `device` offers `xpu:N` beside `cuda:N` and `cpu`, `offload`
+  weighs a stage against the Intel card's free memory, a run that runs out of
+  VRAM there gets the same second attempt and the same sentence an NVIDIA card
+  gets, and the decoder trims its cache between tiles and falls back to smaller
+  tiles on either card. `auto` is unchanged and follows ComfyUI.
+- **The acoustic attention widens its K/V on an Intel card as it does on MPS.**
+  The grouped-query call then reaches a streaming kernel instead of the math one,
+  which is the memory `fused_attention` was written for.
+- **Dutch is offered as a lyrics language.** It was already one the writer can
+  write and Qwen3-ASR can name, but the `language` list stopped at Portuguese, so
+  it could not be chosen and a hand-edited workflow asking for it was written as
+  `auto` without a word. The node's list and the score editor's are one list in
+  two files and are updated together.
+
+### Changed
+
+- **`fast` and `flash` are named as CUDA kernels in the tooltip and the
+  README,** and an Intel card is told to leave `attention_backend` at `sdpa`.
+  Nothing changes for an NVIDIA card.
+- **The token sampler's generator is made on the card it samples on.** Anything
+  that was not CPU or CUDA got a processor generator, and `multinomial` refuses a
+  generator from another device, so the first sampled token on an Intel card
+  would have been an error.
+- **llama.cpp chooses its own device for an Intel ordinal.** It has no XPU
+  backend to name: its Vulkan and SYCL builds spell and order devices differently
+  from torch, so `--device CUDA{N}` is no longer invented for one.
+
+### Fixed
+
+- **`device` refuses an ordinal below zero** with a sentence rather than letting
+  the driver produce a confusing failure.
+- **The options list and its tooltip no longer fail when torch cannot be
+  imported yet,** which is the state ComfyUI reads the node list in.
+
 ## 0.10.0 - 2026-09-26
 
 ### Added

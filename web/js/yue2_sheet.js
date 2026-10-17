@@ -1,6 +1,6 @@
 export const LANGUAGES = [
     "English", "Russian", "Chinese", "Japanese", "Korean",
-    "Spanish", "French", "German", "Italian", "Portuguese",
+    "Spanish", "French", "German", "Italian", "Portuguese", "Dutch",
 ];
 
 export const TAGS = [

@@ -18,7 +18,7 @@ import logging
 import re
 import time
 
-from . import phrasing, placement, runtime, transpose
+from . import devices, phrasing, placement, runtime, transpose
 from .constants import (
     AUTO_MIN_SECONDS, CONTEXT, FRAME_SECONDS, MAX_SECONDS, SAMPLE_RATE, length_ceiling,
     normalize_seed, seconds_to_tokens, sung_lines,
@@ -508,7 +508,7 @@ def _decode(models, latents, progress, cancelled, timing, band=None):
             try:
                 audio = _decode_tiled(vae, z, core, progress, cancelled, band)
                 break
-            except torch.cuda.OutOfMemoryError:
+            except devices.out_of_memory():
                 if position == len(sizes) - 1:
                     raise
                 log.warning(
@@ -516,12 +516,12 @@ def _decode(models, latents, progress, cancelled, timing, band=None):
                     "retrying with %d. This run will not sound bit-identical to one "
                     "that decoded in a single tile size.", core, sizes[position + 1],
                 )
-                torch.cuda.empty_cache()
+                devices.empty_cache(device)
     finally:
         vae.to("cpu")
         _forget_computed_weights(vae)
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        if devices.is_accelerator(device):
+            devices.empty_cache(device)
 
     if not torch.isfinite(audio).all():
         raise ValueError("The decoder produced non-finite audio")
@@ -563,18 +563,18 @@ def _decode_tiled(vae, z, core_frames, progress, cancelled, band=None):
     per tile. On Windows that difference is not an error but a card spilling
     into system memory. The pool ComfyUI uses by default on CUDA 13 held 4.0-4.5
     either way; the tiles and the samples are the same, and it costs about a
-    tenth of a second.
+    tenth of a second. An Intel card holds blocks the same way, so the trim is
+    asked of whichever accelerator is decoding.
     """
-    import torch
-
     stage = band or Stages.DECODE
-    trim = next(vae.parameters()).device.type == "cuda"
+    card = next(vae.parameters()).device
+    trim = devices.is_accelerator(card)
 
     def report(done, total):
         if cancelled is not None and cancelled():
             raise InterruptedError("Cancelled during decode")
         if trim:
-            torch.cuda.empty_cache()
+            devices.empty_cache(card)
         _band(progress, stage, done, total)
 
     return vae.decode_tiled(z, core_frames=core_frames,

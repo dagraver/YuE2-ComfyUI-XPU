@@ -9,8 +9,22 @@ def synchronize(device):
     device = torch.device(device)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+    elif device.type == "xpu":
+        torch.xpu.synchronize(device)
     elif device.type == "mps":
         torch.mps.synchronize()
+
+
+def rng_device(device):
+    """Where the request's generator is made: the device its probabilities live on.
+
+    ``torch.multinomial`` refuses a generator from another device, so the two
+    must agree. CPU, CUDA and XPU all take one directly; MPS builds no generator
+    of its own here, and its sampling goes through the processor as it always
+    did.
+    """
+    device = torch.device(device)
+    return device if device.type in {"cpu", "cuda", "xpu"} else torch.device("cpu")
 
 
 def window_penalty(logits, recent_ids, penalty):
@@ -68,8 +82,9 @@ def generate_tokens(model, prefix, sampling, seed, phase, negative=None, cfg_sca
     if cancelled is not None and cancelled():
         raise InterruptedError("Cancelled before prefill")
     # The two stages deliberately reset their request-local seed, matching the preset.
-    rng_device = device if device.type in {"cpu", "cuda"} else torch.device("cpu")
-    generator = torch.Generator(device=rng_device).manual_seed(seed)
+    # The generator must be made on the device its probabilities will live on, or
+    # multinomial refuses it; see rng_device.
+    generator = torch.Generator(device=rng_device(device)).manual_seed(seed)
     config = model.config
 
     def prefill(ids):

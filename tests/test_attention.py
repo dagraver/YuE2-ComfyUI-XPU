@@ -46,6 +46,20 @@ def test_sdpa_needs_no_engine_and_a_stranger_is_refused():
         attention.engine_for("math", "cuda")
 
 
+def test_a_cuda_only_engine_is_refused_on_an_intel_card():
+    """'fast' is an aten CUDA kernel and 'flash' is flash-attn, so an Intel card is pointed at 'sdpa'."""
+    torch = pytest.importorskip("torch")
+    try:
+        torch.device("xpu:0")
+    except Exception:
+        pytest.skip("this torch has no XPU device type")
+    for name in ("fast", "flash"):
+        with pytest.raises(ValueError) as refused:
+            attention.engine_for(name, "xpu:0")
+        assert "'sdpa'" in str(refused.value) and "xpu" in str(refused.value)
+    assert attention.engine_for("sdpa", "xpu:0") is None
+
+
 def test_flash_without_the_package_says_what_to_do(monkeypatch):
     monkeypatch.setitem(sys.modules, "flash_attn", None)
     with pytest.raises(ValueError) as refused:

@@ -37,6 +37,8 @@ import logging
 import os
 import threading
 
+from .. import devices
+
 log = logging.getLogger(__name__)
 
 KEEP_RESULTS = 8
@@ -98,24 +100,18 @@ def unload() -> None:
         mm.soft_empty_cache()
     except Exception:
         try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            devices.empty_cache()
         except Exception:
             log.debug("[yue2_comfy.asr] no cache to empty", exc_info=True)
 
 
 def _free_bytes(device) -> int:
     """Free memory on the card, or a very large number when it cannot be read: nothing is evicted on a guess."""
-    try:
-        import torch
-
-        free, _total = torch.cuda.mem_get_info(device)
-        return int(free)
-    except Exception:
+    free = devices.free_bytes(device)
+    if free is None:
         log.debug("[yue2_comfy.asr] could not check free memory", exc_info=True)
         return 1 << 62
+    return int(free)
 
 
 def _make_room(device, room: int = ROOM_BYTES, other=None) -> None:
@@ -126,7 +122,7 @@ def _make_room(device, room: int = ROOM_BYTES, other=None) -> None:
     is the other listener kept here, ``(name, is_loaded, unload)``: it goes
     first, being the quickest to load again.
     """
-    if getattr(device, "type", "cpu") != "cuda":
+    if not devices.is_accelerator(device):
         return
     if _free_bytes(device) >= room:
         return
@@ -204,10 +200,7 @@ def unload_aligner() -> None:
         mm.soft_empty_cache()
     except Exception:
         try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            devices.empty_cache()
         except Exception:
             log.debug("[yue2_comfy.asr] no cache to empty", exc_info=True)
 

@@ -402,15 +402,25 @@ def _cache_key(files: Files, device, variant: str, low_vram: bool = False):
 
 
 def _empty_cache() -> None:
+    """Give back what both the garbage collector and the accelerator were holding.
+
+    The cache is emptied on whichever accelerator this build has -- CUDA and XPU
+    both keep the blocks of freed tensors. ``ipc_collect`` is CUDA's alone: it
+    releases the handles a tensor shared with another process left behind, and
+    an Intel build has no such handles to release.
+    """
     gc.collect()
+    try:
+        devices.empty_cache()
+    except Exception:
+        log.debug("[yue2_comfy.loader._empty_cache] no cache to empty", exc_info=True)
     try:
         import torch
 
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:
-        log.debug("[yue2_comfy.loader._empty_cache] skipped", exc_info=True)
+        log.debug("[yue2_comfy.loader._empty_cache] nothing shared to collect", exc_info=True)
 
 
 def _free_comfy_vram(spec: str) -> None:
@@ -489,7 +499,7 @@ def acquire(files: Files, device_spec: str = "auto", variant: str = "standard",
 
             if progress is not None:
                 progress.text("Packing the layers into INT8")
-            quantized.compress(lm, device if device.type == "cuda" else None)
+            quantized.compress(lm, device if devices.is_accelerator(device) else None)
         _STATE.update(key=key, lm=lm, vae=vae, tokenizer=tokenizer)
         log.info("[yue2_comfy.loader] resident on %s%s", device, _vram_suffix(device))
         return Models(lm, vae, tokenizer, device, offload, bool(low_vram), loras)
@@ -497,12 +507,7 @@ def acquire(files: Files, device_spec: str = "auto", variant: str = "standard",
 
 def _vram_suffix(device) -> str:
     """', 7.13 GiB allocated' when that number exists, otherwise nothing."""
-    try:
-        import torch
-
-        if getattr(device, "type", None) != "cuda":
-            return ""
-        gib = torch.cuda.memory_allocated(device) / (1024 ** 3)
-        return ", {:.2f} GiB allocated".format(gib)
-    except Exception:
+    allocated = devices.memory_allocated(device)
+    if allocated is None:
         return ""
+    return ", {:.2f} GiB allocated".format(allocated / (1024 ** 3))

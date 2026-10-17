@@ -46,7 +46,7 @@ import time
 
 import torch
 
-from .. import placement, quantized, runtime
+from .. import devices, placement, quantized, runtime
 from . import catalogue, choices, formats
 
 log = logging.getLogger(__name__)
@@ -310,8 +310,8 @@ def ensure(models, keeper, half: str, homes: bool = True) -> None:
             else:
                 _restore_outside(keeper, lm)
             keeper.lora.outside = outside
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
+        if devices.is_accelerator(device):
+            devices.synchronize(device)
     names = ", ".join(choice.name or choice.path for choice in chosen) or "none"
     log.info("[yue2_comfy.lora] the %s half now holds %s (%.2f s)", half.upper(), names,
              time.perf_counter() - started)

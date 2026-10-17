@@ -193,7 +193,7 @@ bytes too."""
 WRITER_AUTO = "auto"
 LANGUAGE_CHOICES = (
     "auto", "English", "Russian", "Chinese", "Japanese", "Korean",
-    "Spanish", "French", "German", "Italian", "Portuguese",
+    "Spanish", "French", "German", "Italian", "Portuguese", "Dutch",
 )
 
 WRITER_LENGTH_LINES = {

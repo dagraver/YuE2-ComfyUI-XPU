@@ -8,9 +8,9 @@ with no STYLE heading, and one that welds its section tags to the line above.
 import pytest
 
 from yue2_comfy import writer
-from yue2_comfy.constants import (MAX_SECONDS, WRITER_LENGTH_CHOICES,
-                                  WRITER_LENGTH_DEFAULT, WRITER_LINES,
-                                  auto_seconds, length_lines)
+from yue2_comfy.constants import (LANGUAGE_CHOICES, MAX_SECONDS,
+                                  WRITER_LENGTH_CHOICES, WRITER_LENGTH_DEFAULT,
+                                  WRITER_LINES, auto_seconds, length_lines)
 
 GOOD = """STYLE
 Russian, winter folk ballad, warm female voice, acoustic guitar and harp, gentle melody, slow phrasing, 72 BPM
@@ -165,6 +165,18 @@ def test_the_prompt_carries_the_budget_and_the_language():
 def test_auto_language_names_no_language():
     prompt = writer.system_prompt(12, "auto")
     assert "Sing it in" not in prompt
+
+
+def test_every_offered_language_reaches_the_prompt():
+    """The widget is the list, so a language the list forgets is written as 'auto' in silence."""
+    for language in [name for name in LANGUAGE_CHOICES if name != "auto"]:
+        assert "write the lyrics in " + language in writer.system_prompt(12, language), language
+
+
+def test_dutch_is_offered_and_reaches_the_prompt():
+    """Dutch is one the writer can write and Qwen3-ASR can name; only the list was missing it."""
+    assert "Dutch" in LANGUAGE_CHOICES
+    assert "write the lyrics in Dutch" in writer.system_prompt(12, "Dutch")
 
 
 def test_an_unknown_language_is_not_injected():

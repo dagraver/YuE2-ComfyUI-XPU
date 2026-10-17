@@ -183,6 +183,12 @@ def narrowed(models, enabled: bool = True):
     The swap lasts one stage and is undone afterwards, including on failure.
     ``placement`` is told to forget what it measured, because the AR half is
     1.41 GiB smaller while this holds and that size decides what it moves.
+
+    Only a card that captures its decode as a graph can use this. The window is
+    switched on by that graph's own capture, which happens after the prefill has
+    read every row; XPU, like the processor, decodes eagerly and has no such
+    moment, so its tables stay whole and ``placement`` moves them with the half
+    they belong to. Nothing is lost there but the 1.41 GiB.
     """
     lm = getattr(models, "lm", None)
     card = getattr(models, "device", None)

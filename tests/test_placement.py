@@ -10,6 +10,7 @@ the meta device, and skipped where torch is not installed.
 from __future__ import annotations
 
 import itertools
+import types
 
 import pytest
 
@@ -440,3 +441,97 @@ def test_the_decode_trims_every_tile_and_forgets_the_computed_weights(monkeypatc
     generate._decode(Models, torch.zeros(12, 64), None, None, {})
     assert len(trims) >= 3
     assert forgotten == [Models.vae]
+
+
+def test_an_out_of_memory_is_retried_on_an_intel_card_too(monkeypatch):
+    """torch's own OutOfMemoryError is what an XPU raises, and it gets the same second attempt.
+
+    The class is caught by ``devices`` rather than named here, so an Intel card
+    that runs out in 'auto' is retried with only the half the stage needs,
+    exactly as an NVIDIA one is.
+    """
+    torch = pytest.importorskip("torch")
+    from yue2_comfy import devices
+
+    attempts = []
+
+    class Models:
+        offload = p.AUTO
+        device = types.SimpleNamespace(type="xpu", index=0)
+
+    monkeypatch.setattr(devices, "empty_cache", lambda device=None: None)
+
+    def call(mode):
+        attempts.append(mode)
+        if len(attempts) == 1:
+            raise torch.OutOfMemoryError("XPU out of memory. Tried to allocate 3.00 GiB")
+        return "song"
+
+    assert p.guarded(Models(), "the score", call) == "song"
+    assert attempts == [p.AUTO, p.ON]
+
+
+def test_a_second_out_of_memory_says_what_to_change(monkeypatch):
+    """The error goes up as the class that was caught, with the sentence a reader needs."""
+    torch = pytest.importorskip("torch")
+    from yue2_comfy import devices
+
+    class Models:
+        offload = p.AUTO
+        device = types.SimpleNamespace(type="xpu", index=0)
+
+    monkeypatch.setattr(devices, "empty_cache", lambda device=None: None)
+
+    def call(mode):
+        raise torch.OutOfMemoryError("XPU out of memory")
+
+    with pytest.raises(torch.OutOfMemoryError) as raised:
+        p.guarded(Models(), "flow matching", call)
+    assert "max_seconds" in str(raised.value)
+
+
+def test_the_decode_falls_back_to_smaller_tiles_on_an_intel_card(monkeypatch):
+    """The tiled retry is for whichever card ran out, and its cache is trimmed between tiles."""
+    torch = pytest.importorskip("torch")
+    from yue2_comfy import devices, generate
+
+    trims, sizes = [], []
+    monkeypatch.setattr(devices, "empty_cache", lambda device=None: trims.append(device))
+    monkeypatch.setattr(generate, "_forget_computed_weights", lambda vae: None)
+
+    class Device:
+        type = "xpu"
+        index = 0
+
+    class Weight:
+        device = Device()
+
+    class Config:
+        decode_core_frames = 1024
+        decode_halo_frames = 64
+
+    class Decoder:
+        config = Config()
+
+        def to(self, device):
+            return self
+
+        def parameters(self):
+            return iter([Weight()])
+
+        def decode_tiled(self, z, core_frames, halo_frames, output_device, on_progress):
+            sizes.append(core_frames)
+            if len(sizes) == 1:
+                raise torch.OutOfMemoryError("XPU out of memory. Tried to allocate 3.00 GiB")
+            on_progress(1, 1)
+            return torch.zeros(1, 2, 8)
+
+    class Models:
+        lm = None
+        vae = Decoder()
+        device = Device()
+        low_vram = False
+
+    generate._decode(Models, torch.zeros(12, 64), None, None, {})
+    assert sizes == [1024, generate.FALLBACK_CORE_FRAMES]
+    assert trims

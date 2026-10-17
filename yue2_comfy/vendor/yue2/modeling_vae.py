@@ -409,7 +409,12 @@ class YuE2VAE(PreTrainedModel):
         device_map = kwargs.pop("device_map", None)
         if device_map is not None:
             if device_map == "auto":
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                if torch.cuda.is_available():
+                    device = "cuda"
+                elif getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+                    device = "xpu"
+                else:
+                    device = "cpu"
             elif isinstance(device_map, str):
                 device = device_map
             elif isinstance(device_map, dict) and set(device_map) == {""}:

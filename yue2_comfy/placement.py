@@ -52,6 +52,8 @@ import gc
 import logging
 import time
 
+from . import devices
+
 log = logging.getLogger(__name__)
 
 AUTO, ON, OFF = "auto", "on", "off"
@@ -234,28 +236,15 @@ def narrows(mode: str) -> bool:
 
 
 def free_bytes(device):
-    """Bytes this process could still allocate on ``device``, or None off CUDA.
+    """Bytes this process could still allocate on ``device``, or None off an accelerator.
 
     The driver's free memory plus what the caching allocator holds unused, and
-    no more than a per-process memory fraction allows when one is set.
+    no more than a per-process memory fraction allows when one is set. CUDA and
+    XPU answer the same questions with the same arguments, so the arithmetic
+    lives in ``devices`` and is asked there for whichever card the run has;
+    None -- the processor, or a card that will not say -- still counts as room.
     """
-    if getattr(device, "type", None) != "cuda":
-        return None
-    try:
-        import torch
-
-        free, total = torch.cuda.mem_get_info(device)
-        allocated = torch.cuda.memory_allocated(device)
-        available = free + torch.cuda.memory_reserved(device) - allocated
-        getter = getattr(torch.cuda.memory, "get_per_process_memory_fraction", None)
-        if getter is not None:
-            fraction = float(getter(device))
-            if fraction < 1.0:
-                available = min(available, int(fraction * total) - allocated)
-        return max(0, int(available))
-    except Exception:
-        log.debug("[yue2_comfy.placement] cannot read free VRAM", exc_info=True)
-        return None
+    return devices.free_bytes(device)
 
 
 def _resolve(root, dotted: str):
@@ -610,8 +599,6 @@ class Placement:
         AR half that goes to the card is 2.63 GiB of its 4.03. ``homes`` False
         is 'off': see the class.
         """
-        import torch
-
         start = time.perf_counter()
         slots = self._pending(half, place)
         moved = sum(entry[3].numel() * entry[3].element_size() for entry in slots)
@@ -626,8 +613,8 @@ class Placement:
             del slots
             self.lora.folded.pop(half, None)
             self.lora.touched.pop(half, None)
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            if devices.is_accelerator(self.device):
+                devices.empty_cache(self.device)
         return time.perf_counter() - start, moved, copied
 
     def cycle(self, half: str, homes: bool = True) -> None:
@@ -803,25 +790,29 @@ def guarded(models, stage: str, call):
     safe because every stage starts from its seed: the second attempt produces
     the tokens or latents the first would have. Outside 'auto', or out of memory
     a second time, the error goes up with a sentence saying what to change.
+
+    "Out of memory" is asked of ``devices`` rather than of CUDA: an Intel card
+    raises torch's own ``OutOfMemoryError`` too, and a run on one has to get the
+    same second attempt and the same sentence as a run on an NVIDIA card. The
+    error is re-raised as the class that was caught, so a caller filtering on it
+    still recognizes it.
     """
     mode = getattr(models, "offload", AUTO)
     mode = mode if mode in MODES else AUTO
     try:
-        import torch
-
-        memory_error = torch.cuda.OutOfMemoryError
+        memory_error = devices.out_of_memory()
     except Exception:
         return call(mode)
     try:
         return call(mode)
     except memory_error as error:
         if mode != AUTO:
-            raise memory_error(str(error) + advice(mode)) from error
+            raise type(error)(str(error) + advice(mode)) from error
     log.warning("[yue2_comfy.placement] %s ran out of VRAM; running it again with only "
                 "the half it needs on the card", stage)
     gc.collect()
-    torch.cuda.empty_cache()
+    devices.empty_cache()
     try:
         return call(ON)
     except memory_error as error:
-        raise memory_error(str(error) + advice(ON)) from error
+        raise type(error)(str(error) + advice(ON)) from error
