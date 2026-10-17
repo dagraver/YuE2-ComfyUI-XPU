@@ -86,8 +86,10 @@ def _make_room(device) -> None:
         from .. import loader
         from ..asr import runtime as asr_runtime
         from ..sheetsage import runtime as sheetsage_runtime
+        from ..whisper import runtime as whisper_runtime
 
-        for name, keeper in (("SheetSage2", sheetsage_runtime), ("Qwen3-ASR", asr_runtime), ("YuE2", loader)):
+        for name, keeper in (("SheetSage2", sheetsage_runtime), ("Qwen3-ASR", asr_runtime),
+                             ("Whisper", whisper_runtime), ("YuE2", loader)):
             if _free_bytes(device) >= ROOM_BYTES:
                 break
             if keeper.is_loaded():

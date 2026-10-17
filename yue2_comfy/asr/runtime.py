@@ -9,7 +9,10 @@ the model file and the seed: a new seed asks for a new layout and nothing more.
 The words of a song are recognised in one pass over the whole recording, which
 hears them best. Each section with a voice in it is then heard once more on its
 own, and those rougher texts only guide where the whole song's words are cut
-(see ``align``).
+(see ``align``). The guides are kept with the words, so that another text of
+the same song -- the lyrics a language model wrote from a second hearing --
+is cut the same way (``split``), and that model's answer is kept like a
+layout (``chosen``).
 
 The forced aligner is kept here as well, in a second slot: a different model
 on the same network, asked by 'YuE2 Edit Track' when each word of a song is
@@ -70,6 +73,7 @@ _STATE = {"key": None, "net": None, "tokenizer": None}
 _ALIGNER = {"key": None, "held": None}
 _RESULTS = collections.OrderedDict()
 _LAYOUTS = collections.OrderedDict()
+_CHOSEN = collections.OrderedDict()
 _TIMES = collections.OrderedDict()
 _HEARD = collections.OrderedDict()
 
@@ -119,8 +123,9 @@ def _make_room(device, room: int = ROOM_BYTES, other=None) -> None:
 
     A card with room to spare keeps everything where it is, so a run that
     follows a song does not pay to reload the song model afterwards. ``other``
-    is the other listener kept here, ``(name, is_loaded, unload)``: it goes
-    first, being the quickest to load again.
+    is the other listener kept here, ``(name, is_loaded, unload)``, or a list
+    of them: they go first, being the quickest to load again, then Whisper,
+    the second hearing, which is only ever asked right after the speech model.
     """
     if not devices.is_accelerator(device):
         return
@@ -138,9 +143,12 @@ def _make_room(device, room: int = ROOM_BYTES, other=None) -> None:
         from ..sheetsage import runtime as sheetsage_runtime
         from ..vocals import runtime as vocals_runtime
 
-        keepers = [other] if other is not None else []
+        from ..whisper import runtime as whisper_runtime
+
+        keepers = list(other) if isinstance(other, list) else [other] if other is not None else []
         keepers += [(name, keeper.is_loaded, keeper.unload) for name, keeper in (
-            ("SheetSage2", sheetsage_runtime), ("Mel-Band RoFormer", vocals_runtime), ("YuE2", loader))]
+            ("Whisper", whisper_runtime), ("SheetSage2", sheetsage_runtime), ("Mel-Band RoFormer", vocals_runtime),
+            ("YuE2", loader))]
         for name, loaded, let_go in keepers:
             if _free_bytes(device) >= room:
                 break
@@ -151,12 +159,19 @@ def _make_room(device, room: int = ROOM_BYTES, other=None) -> None:
         log.debug("[yue2_comfy.asr] the pack's other models left in place", exc_info=True)
 
 
+def _unload_whisper() -> None:
+    """Whisper off the card, for a small card where the listeners take turns."""
+    from ..whisper import runtime as whisper_runtime
+
+    whisper_runtime.unload()
+
+
 def acquire(folder: str, device, progress=None, low_vram: bool = False) -> tuple:
     """The network and tokenizer for this folder on this device, loading them when they are not already.
 
     With ``low_vram`` the model is the one packed for a small card
-    (``model.load``), and the word aligner leaves the card before it comes:
-    on a small card the two listen one at a time.
+    (``model.load``), and the word aligner and Whisper leave the card before
+    it comes: on a small card the listeners take turns.
     """
     key = (stamp(folder), str(device), bool(low_vram))
     with _LOCK:
@@ -165,6 +180,7 @@ def acquire(folder: str, device, progress=None, low_vram: bool = False) -> tuple
         unload()
         if low_vram:
             unload_aligner()
+            _unload_whisper()
         _make_room(device, SMALL_ROOM_BYTES if low_vram else ROOM_BYTES,
                    ("Qwen3-ForcedAligner", aligner_loaded, unload_aligner))
         if progress is not None:
@@ -209,7 +225,7 @@ def acquire_aligner(folder: str, tokenizer_path: str, device, progress=None, low
     """The forced aligner for this folder on this device, loaded when it is not already held.
 
     With ``low_vram`` it is loaded for a small card (``aligner.load``) and the
-    speech model leaves the card before it comes.
+    speech model and Whisper leave the card before it comes.
     """
     key = (stamp(folder), os.path.normcase(os.path.abspath(tokenizer_path)), str(device), bool(low_vram))
     with _LOCK:
@@ -218,6 +234,7 @@ def acquire_aligner(folder: str, tokenizer_path: str, device, progress=None, low
         unload_aligner()
         if low_vram:
             unload()
+            _unload_whisper()
         _make_room(device, SMALL_ALIGNER_ROOM_BYTES if low_vram else ALIGNER_ROOM_BYTES,
                    ("Qwen3-ASR", is_loaded, unload))
         if progress is not None:
@@ -336,14 +353,16 @@ def guide_language(language) -> str:
 
 
 def recognise(folder: str, device, waveform, rate: int, timed: list, key, progress=None, cancelled=None,
-              low_vram: bool = False) -> dict:
+              low_vram: bool = False, language: str = "") -> dict:
     """``{"language", "text", "parts"}``: the whole song's words, and those words cut into ``timed``'s sections.
 
     The captured decoding step and its cache are let go however the
     recognition ends, so a cancelled run leaves nothing on the card.
     ``low_vram`` hears them with the model packed for a small card.
+    ``language``, a name ``prompt.language_name`` takes, is the language the
+    whole song and its sections are heard in; empty, the model names it.
     """
-    full_key = tuple(key) + (plan(timed), bool(low_vram))
+    full_key = tuple(key) + (plan(timed), bool(low_vram), str(language or ""))
     found = _get(_RESULTS, full_key)
     if found is not None:
         if progress is not None:
@@ -351,7 +370,7 @@ def recognise(folder: str, device, waveform, rate: int, timed: list, key, progre
         return found
     net, tokenizer = acquire(folder, device, progress, low_vram=low_vram)
     try:
-        result = _recognise(net, tokenizer, waveform, rate, timed, progress, cancelled)
+        result = _recognise(net, tokenizer, waveform, rate, timed, progress, cancelled, language)
     finally:
         forget = getattr(net, "forget_steps", None)
         if callable(forget):
@@ -360,7 +379,7 @@ def recognise(folder: str, device, waveform, rate: int, timed: list, key, progre
     return result
 
 
-def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cancelled) -> dict:
+def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cancelled, told: str = "") -> dict:
     from . import align, model, prompt
 
     audio = model.mono_16k(waveform, rate)
@@ -379,14 +398,15 @@ def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cance
     import time
 
     began = time.monotonic()
-    whole = model.recognise(net, tokenizer, audio, cancelled=cancelled,
+    whole = model.recognise(net, tokenizer, audio, language=told, cancelled=cancelled,
                             progress=report(0, "Listening for the words"))
     log.info("[yue2_comfy.asr] heard %.0f s of audio in %.1f s, %d tokens",
              audio.numel() / prompt.SAMPLE_RATE, time.monotonic() - began, len(whole.get("tokens", ())))
     began = time.monotonic()
-    language = whole["language"] or ""
-    guide = guide_language(language)
+    language = told or whole["language"] or ""
+    guide = told or guide_language(language)
     parts = [""] * len(timed)
+    guides = None
     if guided:
         guides = [""] * len(timed)
         for step, index in enumerate(sung, start=1):
@@ -401,7 +421,25 @@ def _recognise(net, tokenizer, waveform, rate: int, timed: list, progress, cance
         log.info("[yue2_comfy.asr] guided %d sections in %.1f s", len(sung), time.monotonic() - began)
     elif timed:
         parts[sung[0] if sung else 0] = whole["text"]
-    return {"language": language, "text": whole["text"], "parts": parts}
+    return {"language": language, "text": whole["text"], "parts": parts, "guides": guides}
+
+
+def split(words: dict, text: str, timed: list) -> list:
+    """Another text of the same song cut into ``timed``'s sections the way ``recognise`` cut its own words.
+
+    ``words`` is what ``recognise`` gave: its section guides cut ``text`` as
+    they cut the words they were heard with, and a song with one sung
+    section gets the whole text there.
+    """
+    from . import align
+
+    if words.get("guides") is not None:
+        return align.split(text, words["guides"])
+    parts = [""] * len(timed)
+    if timed:
+        sung = [index for index, section in enumerate(timed) if section["notes"] > 0]
+        parts[sung[0] if sung else 0] = text
+    return parts
 
 
 def laid_out(key, produce):
@@ -410,4 +448,16 @@ def laid_out(key, produce):
     if found is None:
         found = produce()
         _put(_LAYOUTS, key, found)
+    return found
+
+
+def chosen(key, produce):
+    """The language model's choice between two hearings kept for ``key``, or ``produce()``'s, kept for next time.
+
+    Kept apart from the layouts, so that choosing does not push them out.
+    """
+    found = _get(_CHOSEN, key)
+    if found is None:
+        found = produce()
+        _put(_CHOSEN, key, found)
     return found

@@ -505,7 +505,7 @@ class Network(nn.Module):
         return torch.argmax(F.linear(x, self.language_model.embed_tokens.weight)[:, -1].float(), dim=-1)
 
 
-def near_tie(logits: torch.Tensor, fast: int, position: int, margin: float = NEAR_TIE) -> bool:
+def near_tie(logits: torch.Tensor, fast: int, position: int, margin: float = NEAR_TIE, tag: str = "asr") -> bool:
     """Whether the plain step's logits let the replayed step's pick ``fast`` stand.
 
     Equal picks always do. Otherwise ``fast`` must score within ``margin`` of
@@ -520,12 +520,13 @@ def near_tie(logits: torch.Tensor, fast: int, position: int, margin: float = NEA
     gap = float(logits[best] - logits[fast])
     import logging
 
-    logging.getLogger(__name__).info("[yue2_comfy.asr] at position %d the replayed step picked a token %.2f below "
-                                     "the plain step's best (a near tie is under %.1f)", position, gap, margin)
+    logging.getLogger(__name__).info("[yue2_comfy.%s] at position %d the replayed step picked a token %.2f below "
+                                     "the plain step's best (a near tie is under %.1f)", tag, position, gap, margin)
     return gap <= margin
 
 
-def cache_agrees(cache: list, replayed_kv: list, since: int, position: int, tolerance: float = 0.25) -> bool:
+def cache_agrees(cache: list, replayed_kv: list, since: int, position: int, tolerance: float = 0.25,
+                 tag: str = "asr") -> bool:
     """Whether the replayed steps left the cache as the plain step would have.
 
     Called at a check, after the plain step has written ``position``: every
@@ -554,7 +555,7 @@ def cache_agrees(cache: list, replayed_kv: list, since: int, position: int, tole
         import logging
 
         logging.getLogger(__name__).info(
-            "[yue2_comfy.asr] at position %d the replayed cache %s (the check allows %.0f%%)", position,
+            "[yue2_comfy.%s] at position %d the replayed cache %s (the check allows %.0f%%)", tag, position,
             "holds values that are not finite" if not sound else "is off by %.0f%% of a layer's largest value" % (100 * worst),
             100 * tolerance)
         return False
@@ -575,7 +576,13 @@ class GraphStep:
     """
 
     def __init__(self, net: Network, static: dict, start: int):
-        """Recorded right after a request's prefill: the rehearsals write only position ``start``, which its first step writes again."""
+        """Recorded right after a request's prefill, then replayed once (``runtime.launched``).
+
+        The rehearsals and that replay write only position ``start``, which its
+        first step writes again.
+        """
+        from ..runtime import launched
+
         device, dtype = net.device, net.dtype
         room = static["room"]
         self.token = torch.zeros(1, 1, dtype=torch.long, device=device)
@@ -593,6 +600,7 @@ class GraphStep:
         self.graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.graph, capture_error_mode=CAPTURE_MODE):
             self.out = run()
+        launched(self.graph)
 
     def reset(self, start: int) -> None:
         """Ready for a request whose first ``start`` positions the cache already holds."""

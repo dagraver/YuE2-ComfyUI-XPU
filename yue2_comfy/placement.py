@@ -107,6 +107,14 @@ measured on 2026-09-17, with the weights and the caches subtracted: 47.0 and
 42.8 for their flow matching. At 48 the model lands within a percent of the
 prefill and about eight percent above the solve, which is the safe side."""
 
+HALF_WORK = 1.5
+"""How much more the acoustic stage holds on a card older than Ampere, where it runs in float16.
+
+Under autocast the residual stream adds float16 to bfloat16 and becomes
+float32, and each multiply holds its weight cast for the length of it.
+Measured on 2026-10-07 on a 5090 with the stage forced that way, five songs
+of 38 to 312 seconds: 1.42 to 1.48 times the work of the bfloat16 stage."""
+
 WORK_BASE = int(0.35 * GIB)
 """cuBLAS workspace, sampling buffers and the like. The resident allocation sat
 0.29 to 0.34 GiB above the weights in every measured run."""
@@ -742,22 +750,27 @@ def acoustic(models, mode=None):
 
     The replacement context moves nothing back on the way out. The next chunk's
     prefill asks for the AR half itself, and so does the next run.
+
+    On a card older than Ampere both estimates are HALF_WORK times larger,
+    because there the stage runs in float16; see ``runtime.fused_attention``.
     """
     lm = getattr(models, "lm", None)
     if lm is None:
         yield
         return
 
+    from . import attention
     from .vendor.yue2 import nar
 
     original_engine, original_offload = nar.CachedNAR, nar._offload_ar
     pending = {"solve": WORK_BASE}
+    scale = HALF_WORK if attention.old_card(getattr(models, "device", None)) else 1.0
 
     class PlacedNAR(original_engine):
         def __init__(self, model, chunk, *args, **kwargs):
             tokens, frames = len(chunk.ar_tokens), len(chunk.noise)
-            pending["solve"] = solve_bytes(tokens, frames)
-            arrange(models, AR, prefill_bytes(tokens), "the acoustic prefill", mode)
+            pending["solve"] = int(solve_bytes(tokens, frames) * scale)
+            arrange(models, AR, int(prefill_bytes(tokens) * scale), "the acoustic prefill", mode)
             super().__init__(model, chunk, *args, **kwargs)
 
     @contextlib.contextmanager

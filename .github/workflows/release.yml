@@ -94,7 +94,7 @@ jobs:
             fi
           done
           for needed in __init__.py pyproject.toml requirements.txt \
-                        LICENSE NOTICE.md README.md README_RU.md \
+                        LICENSE NOTICE.md README.md README_RU.md README_ZH.md \
                         CHANGELOG.md CHANGELOG_RU.md \
                         locales/ru/main.json locales/ru/nodeDefs.json \
                         yue2_comfy/nodes.py yue2_comfy/constants.py \
@@ -116,7 +116,11 @@ jobs:
                         yue2_comfy/asr/decode.py yue2_comfy/asr/layout.py \
                         yue2_comfy/asr/model.py yue2_comfy/asr/network.py \
                         yue2_comfy/asr/prompt.py yue2_comfy/asr/runtime.py \
-                        yue2_comfy/asr/tokenizer.py yue2_comfy/sheetsage/__init__.py \
+                        yue2_comfy/asr/tokenizer.py yue2_comfy/asr/mend.py \
+                        yue2_comfy/languages.py yue2_comfy/whisper/__init__.py \
+                        yue2_comfy/whisper/decode.py yue2_comfy/whisper/network.py \
+                        yue2_comfy/whisper/model.py yue2_comfy/whisper/runtime.py \
+                        yue2_comfy/whisper/tokenizer.py yue2_comfy/sheetsage/__init__.py \
                         yue2_comfy/sheetsage/vocab.py yue2_comfy/sheetsage/grammar.py \
                         yue2_comfy/sheetsage/events.py yue2_comfy/sheetsage/abc_rebuild.py \
                         yue2_comfy/sheetsage/network.py yue2_comfy/sheetsage/model.py \
@@ -162,7 +166,8 @@ jobs:
                       "8 - Cover a song" \
                       "9 - An a cappella song" \
                       "10 - A song with LoRA" \
-                      "11 - Edit a song"; do
+                      "11 - Edit a song" \
+                      "12 - An instrumental"; do
             for needed in "example_workflows/$stem.json" "example_workflows/$stem.jpg"; do
               echo "$listed" | grep -qxF "$PREFIX/$needed" || {
                 echo "::error::$needed is missing from $ARCHIVE"

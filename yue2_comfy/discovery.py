@@ -49,6 +49,7 @@ from .constants import (
     SHEETSAGE_BYTES, SHEETSAGE_MARKERS, SHEETSAGE_NAME, SHEETSAGE_PATH,
     VAE_BYTES, VAE_DIRNAME, VAE_LEGACY_DIRNAME, VAE_MARKERS, VAE_SIGNATURE, VOCALS_BYTES,
     VOCALS_KNOWN_BYTES, VOCALS_MARKERS, VOCALS_NAME, VOCALS_REPO, VOCALS_REVISION, WEIGHTS_NAME,
+    WHISPER_BYTES, WHISPER_DIRNAME, WHISPER_FILES, WHISPER_GENERATION_NAME, WHISPER_REPO, WHISPER_TOKENIZER_NAME,
 )
 
 log = logging.getLogger(__name__)
@@ -588,6 +589,53 @@ def asr_missing_message(roots: list) -> str:
     else:
         lines += ["There was nowhere to look: no ComfyUI model folders were found."]
     lines += ["", "Its weights are licensed Apache-2.0."]
+    return "\n".join(lines)
+
+
+def is_whisper_folder(folder: str) -> bool:
+    """A folder holding Whisper large-v3 turbo's weights, its tokenizer and its generation config.
+
+    The weights are known by their size alone (see ``WHISPER_BYTES``): a
+    fine-tune of the same shape would hear differently.
+    """
+    weights = os.path.join(folder, WEIGHTS_NAME)
+    if not all(os.path.isfile(os.path.join(folder, name)) for name in (WHISPER_TOKENIZER_NAME,
+                                                                       WHISPER_GENERATION_NAME)):
+        return False
+    try:
+        return os.path.isfile(weights) and os.path.getsize(weights) == WHISPER_BYTES
+    except OSError:
+        return False
+
+
+def find_whisper(roots=None) -> str:
+    """The folder of Whisper large-v3 turbo, or "": looked for where the speech model is."""
+    roots = paths.asr_roots() if roots is None else roots
+    for root in roots:
+        for home in _homes(root):
+            if is_whisper_folder(home):
+                return home
+    return ""
+
+
+def whisper_missing_message(roots: list) -> str:
+    """Where Whisper goes and the links to it, for somebody who turned downloading off."""
+    lines = [
+        "Whisper large-v3 turbo, which hears the words a second time, is not on this machine yet.",
+        "",
+        "It is three files from OpenAI's own release, the weights {:.2f} GB of them, kept together in one "
+        "folder:".format(WHISPER_BYTES / 1024 ** 3),
+        "",
+    ]
+    lines += ["  " + _link(WHISPER_REPO, name) for name in WHISPER_FILES]
+    lines += ["  -> " + os.path.join(_expected_root(), WHISPER_DIRNAME), ""]
+    if roots:
+        where = "1 place" if len(roots) == 1 else str(len(roots)) + " places"
+        lines += ["Looked in " + where + ", including:", ""]
+        lines += ["  " + path for path in roots[:6]]
+    else:
+        lines += ["There was nowhere to look: no ComfyUI model folders were found."]
+    lines += ["", "Its weights are licensed MIT."]
     return "\n".join(lines)
 
 

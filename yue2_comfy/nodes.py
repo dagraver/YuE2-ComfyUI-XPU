@@ -340,8 +340,9 @@ EDITED_SCORE_TOOLTIP = (
     "'Edit score...' fills it after a run: change notes and chords there, and the "
     "next run sings the edit instead of writing a score, and 'Reset score' empties it "
     "again. The edit belongs to the "
-    "style and lyrics it was made for -- with other words the node writes a new "
-    "score and says so -- while a new seed sings the same edit as a new take. A "
+    "style and lyrics it was made for: with other words the node writes a new "
+    "score and says so, unless 'Keep for new words' is ticked in the editor. A new "
+    "seed sings the same edit as a new take. A "
     "score wired in is sung as it arrives.\n\n"
     "A score that names no section -- a bare tune, as 'YuE2 Load MIDI' hands one on "
     "-- has the lyrics laid along it first: each line on a phrase with about as many "
@@ -405,6 +406,9 @@ class YuE2GenerateSong:
         problem = edits.mismatch(edit, style, lyrics, settings["cot"], GENERATE_INSTEAD)
         if problem:
             announce(unique_id, [("warn", problem)])
+        carried = edits.carried(edit, style, lyrics, settings["cot"])
+        if carried:
+            announce(unique_id, [("warn", carried)])
         edited = edit.score if edit.score and not problem else None
         tune_seconds = None
         if edited:
@@ -450,7 +454,7 @@ class YuE2GenerateSong:
             announce(unique_id, [("warn", short)])
         progress.finish("{:.0f} seconds of {}".format(timing["seconds_of_audio"], "vocals" if voice else "audio"))
         ui = {edits.WORDS_UI: [edits.mark(style, lyrics, settings["cot"])],
-              edits.AUTO_SECONDS_UI: [auto_seconds(lyrics)]}
+              edits.AUTO_SECONDS_UI: [auto_seconds(lyrics)], edits.SUNG_UI: [lyrics]}
         if edited is None:
             ui[edits.SCORE_UI] = [written]
         return {"ui": ui, "result": (audio, score)}

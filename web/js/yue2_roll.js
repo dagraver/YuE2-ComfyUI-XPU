@@ -33,6 +33,38 @@ export const FINEST = 32;
 export const LOWEST = 21;
 export const HIGHEST = 108;
 
+export const ROW_HEIGHT = 14;
+export const ROW_HEIGHTS = [8, 10, 12, 14, 17, 20, 24, 28, 34, 40, 48];
+export const NOTE_TEXT_LEAST = 7;
+
+export function rowHeight(value) {
+    const height = Number(value);
+    return ROW_HEIGHTS.includes(height) ? height : ROW_HEIGHT;
+}
+
+export function nextRowHeight(height, step) {
+    const at = ROW_HEIGHTS.indexOf(rowHeight(height));
+    return ROW_HEIGHTS[Math.max(0, Math.min(ROW_HEIGHTS.length - 1, at + step))];
+}
+
+export function rowTextSizes(height) {
+    const scaled = (size, most) => Math.min(most, Math.round((size * height) / ROW_HEIGHT));
+    return {
+        note: scaled(9, 22),
+        word: Math.max(7, scaled(10, 24)),
+        key: Math.max(7, scaled(10, 16)),
+        kit: Math.max(7, scaled(9, 14)),
+    };
+}
+
+export function textBaseline(top, height, size) {
+    return top + height - Math.round((height - size * 0.72) / 2);
+}
+
+export function keptPitchTop(pitchTop, offset, from, to) {
+    return pitchTop - Math.floor(offset / from) + Math.floor(offset / to);
+}
+
 const SHARP_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const FLAT_NAMES = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 export const MAJOR_ROOTS = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
@@ -422,6 +454,362 @@ export function removeChord(model, start) {
     return { ...model, chords: model.chords.filter((c) => c.start !== start) };
 }
 
+const LETTERS = "CDEFGAB";
+const LETTER_STEPS = [0, 2, 4, 5, 7, 9, 11];
+const LETTER_FIFTHS = [0, 2, 4, -1, 1, 3, 5];
+const FIFTH_TONES = {
+    "": [0, 4, 1], "m": [0, -3, 1], "dim": [0, -3, -6], "aug": [0, 4, 8],
+    "maj7": [0, 4, 1, 5], "m7": [0, -3, 1, -2], "7": [0, 4, 1, -2], "m7b5": [0, -3, -6, -2],
+    "dim7": [0, -3, -6, -9], "m(maj7)": [0, -3, 1, 5], "sus2": [0, 2, 1], "sus4": [0, -1, 1],
+    "7sus4": [0, -1, 1, -2], "6": [0, 4, 1, 3], "m6": [0, -3, 1, 3],
+};
+const DEGREES = ["1", "b2", "2", "b3", "3", "4", "#4", "5", "b6", "6", "b7", "7"];
+const TONE_DEGREES = { "dim": { 6: "b5" }, "m7b5": { 6: "b5" }, "dim7": { 6: "b5", 9: "bb7" }, "aug": { 8: "#5" } };
+const DEGREE_RE = /^(#{0,2}|b{0,2})([1-9]|1[0-3])$/;
+const ACCIDENTALS = { "-2": "bb", "-1": "b", "0": "", "1": "#", "2": "##" };
+export const CHORD_ROOT = 48;
+
+function mod12(value) {
+    return ((value % 12) + 12) % 12;
+}
+
+export function keySharps(key) {
+    const found = KEY_NAME_RE.exec(String(key ?? "").trim());
+    if (!found) return null;
+    const tonic = NATURAL[found[1]] + SHIFT[found[2] || ""] + (found[3] ? 3 : 0);
+    const sharps = mod12(7 * tonic);
+    return sharps > 6 ? sharps - 12 : sharps;
+}
+
+export function chordParts(name) {
+    const match = CHORD_RE.exec(String(name ?? "").trim());
+    if (!match) return null;
+    return {
+        root: mod12(NATURAL[match[1]] + SHIFT[match[2] || ""]),
+        quality: match[3],
+        bass: match[4] ? mod12(NATURAL[match[4]] + SHIFT[match[5] || ""]) : null,
+    };
+}
+
+function spelledRoot(root, quality, sharps) {
+    const centre = sharps + 2;
+    let best = null;
+    for (let letter = 0; letter < 7; letter++) {
+        const alteration = mod12(root - LETTER_STEPS[letter] + 6) - 6;
+        const place = LETTER_FIFTHS[letter] + 7 * alteration;
+        const places = FIFTH_TONES[quality].map((step) => place + step);
+        const cost = [...places, places[0]].reduce((sum, at) => sum + Math.max(0, Math.abs(at - centre) - 3), 0);
+        if (!best || cost < best.cost) best = { cost, letter, alteration };
+    }
+    return LETTERS[best.letter] + (best.alteration > 0 ? "#".repeat(best.alteration) : "b".repeat(-best.alteration));
+}
+
+function bassName(root, degreeText) {
+    const found = DEGREE_RE.exec(degreeText);
+    const rootLetter = LETTERS.indexOf(root[0]);
+    const rootShift = [...root.slice(1)].reduce((sum, sign) => sum + (sign === "#" ? 1 : -1), 0);
+    const degree = Number(found[2]);
+    const accidental = found[1];
+    const interval = LETTER_STEPS[(degree - 1) % 7] + 12 * Math.floor((degree - 1) / 7)
+        + [...accidental].reduce((sum, sign) => sum + (sign === "#" ? 1 : -1), 0);
+    const target = mod12(LETTER_STEPS[rootLetter] + rootShift + interval);
+    const letter = (rootLetter + degree - 1) % 7;
+    const difference = mod12(target - LETTER_STEPS[letter] + 6) - 6;
+    if (Math.abs(difference) <= 2) return LETTERS[letter] + ACCIDENTALS[difference];
+    return ((root + accidental).includes("#") ? SHARP_NAMES : FLAT_NAMES)[target];
+}
+
+export function spellChord(root, quality, bass, key) {
+    const sharps = keySharps(key) ?? 0;
+    const name = spelledRoot(mod12(root), quality, sharps);
+    if (bass === null || bass === undefined || mod12(bass - root) === 0) return name + quality;
+    const step = mod12(bass - root);
+    return name + quality + "/" + bassName(name, TONE_DEGREES[quality]?.[step] ?? DEGREES[step]);
+}
+
+function shapeOf(classes, prefer) {
+    const found = [];
+    for (const quality of QUALITIES) {
+        for (let root = 0; root < 12; root++) {
+            const tones = new Set(CHORD_TONES[quality].map((step) => (root + step) % 12));
+            if (tones.size === classes.size && [...tones].every((tone) => classes.has(tone))) found.push({ root, quality });
+        }
+    }
+    for (const root of prefer) {
+        const hit = found.find((shape) => shape.root === root);
+        if (hit) return hit;
+    }
+    return found[0] || null;
+}
+
+export function namedChord(pitches, key) {
+    const sorted = [...new Set(pitches.map(Number))].sort((a, b) => a - b);
+    const classes = new Set(sorted.map(mod12));
+    if (classes.size < 3) return null;
+    const [bass, ...upper] = sorted;
+    const above = new Set(upper.map(mod12));
+    const tries = [];
+    if (bass < CHORD_ROOT && CHORD_ROOT <= upper[0]) tries.push([above, [mod12(upper[0]), mod12(bass)]]);
+    tries.push([classes, [mod12(bass), mod12(upper[0])]]);
+    if (!above.has(mod12(bass))) tries.push([above, [mod12(upper[0])]]);
+    for (const [wanted, prefer] of tries) {
+        const found = shapeOf(wanted, prefer);
+        if (found) return spellChord(found.root, found.quality, mod12(bass), key);
+    }
+    return null;
+}
+
+export function transposedChord(name, semitones, key) {
+    const parts = chordParts(name);
+    if (!parts || !Number.isInteger(semitones)) return null;
+    if (mod12(semitones) === 0) return String(name).trim();
+    return spellChord(parts.root + semitones, parts.quality, parts.bass === null ? null : parts.bass + semitones, key);
+}
+
+export function chordByDegree(pitch, key) {
+    const tonic = mod12(7 * (keySharps(key) ?? 0));
+    const scale = LETTER_STEPS.map((step) => mod12(tonic + step));
+    const root = mod12(pitch);
+    const at = scale.indexOf(root);
+    if (at < 0) return spellChord(root, "", null, key);
+    const third = mod12(scale[(at + 2) % 7] - root);
+    const fifth = mod12(scale[(at + 4) % 7] - root);
+    const quality = fifth === 6 ? "dim" : third === 3 ? "m" : "";
+    return spellChord(root, quality, null, key);
+}
+
+export function rootPitch(name) {
+    const parts = chordParts(name);
+    return parts ? CHORD_ROOT + parts.root : null;
+}
+
+export function keyAt(sheet, tick) {
+    return sheet.bars[barAt(sheet, Math.max(0, Math.floor(tick)))]?.key || "";
+}
+
+export function chordSpans(model, total) {
+    const sorted = model.chords.slice().sort((a, b) => a.start - b.start);
+    return sorted.map((chord, index) => ({
+        start: chord.start, name: chord.name, end: index + 1 < sorted.length ? sorted[index + 1].start : total,
+    }));
+}
+
+export function chordRoom(model, start, total) {
+    const starts = model.chords.map((c) => c.start).sort((a, b) => a - b);
+    const at = starts.indexOf(start);
+    if (at < 0) return null;
+    return { low: at > 0 ? starts[at - 1] + 1 : 0, high: at + 1 < starts.length ? starts[at + 1] - 1 : total - 1 };
+}
+
+export function moveChord(model, sheet, start, ticks, semitones) {
+    const chord = model.chords.find((c) => c.start === start);
+    const room = chordRoom(model, start, sheet.total);
+    if (!chord || !room || !Number.isInteger(ticks) || !Number.isInteger(semitones)) return null;
+    const to = start + ticks;
+    if (to < room.low || to > room.high) return null;
+    if (!ticks && mod12(semitones) === 0) return model;
+    const name = transposedChord(chord.name, semitones, keyAt(sheet, to));
+    if (!name) return null;
+    const chords = model.chords.map((c) => (c.start === start ? { start: to, name } : c));
+    return { ...model, chords: chords.sort((a, b) => a.start - b.start) };
+}
+
+export function moveChords(model, sheet, starts, ticks, semitones) {
+    if (!ticks && mod12(semitones) === 0) return model;
+    const chosen = new Set(starts);
+    const kept = model.chords.filter((c) => !chosen.has(c.start));
+    const taken = new Set(kept.map((c) => c.start));
+    const moved = [];
+    for (const chord of model.chords) {
+        if (!chosen.has(chord.start)) continue;
+        const start = chord.start + ticks;
+        const name = transposedChord(chord.name, semitones, keyAt(sheet, start));
+        if (!name || !Number.isInteger(start) || start < 0 || start >= sheet.total || taken.has(start)) return null;
+        taken.add(start);
+        moved.push({ start, name });
+    }
+    return { ...model, chords: [...kept, ...moved].sort((a, b) => a.start - b.start) };
+}
+
+export function sectionKind(name) {
+    return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\s*\d+$/, "");
+}
+
+function carriedAt(chords, tick) {
+    let name = null;
+    for (const chord of chords) if (chord.start < tick) name = chord.name;
+    return name;
+}
+
+function soundingAt(chords, tick) {
+    let name = null;
+    for (const chord of chords) if (chord.start <= tick) name = chord.name;
+    return name;
+}
+
+function patternIn(chords, from, to) {
+    const sorted = chords.slice().sort((a, b) => a.start - b.start);
+    const inside = sorted.filter((c) => c.start >= from && c.start < to).map((c) => [c.start - from, c.name]);
+    if (!inside.length || inside[0][0] !== 0) inside.unshift([0, carriedAt(sorted, from)]);
+    return inside;
+}
+
+function samePattern(one, other) {
+    return one.length === other.length && one.every(([at, name], index) => other[index][0] === at && other[index][1] === name);
+}
+
+function writePattern(chords, from, to, pattern, total) {
+    const sorted = chords.slice().sort((a, b) => a.start - b.start);
+    const had = sorted.some((c) => c.start === from);
+    const heldOn = to < total && !sorted.some((c) => c.start === to) ? soundingAt(sorted, to) : undefined;
+    const out = sorted.filter((c) => c.start < from || c.start >= to);
+    for (const [at, name] of pattern) {
+        if (at > 0) {
+            out.push({ start: from + at, name });
+            continue;
+        }
+        if (name === null) {
+            if (carriedAt(out, from) !== null) return null;
+            continue;
+        }
+        if (had || carriedAt(out, from) !== name) out.push({ start: from, name });
+    }
+    out.sort((a, b) => a.start - b.start);
+    if (heldOn !== undefined && soundingAt(out, to) !== heldOn) {
+        if (heldOn === null) return null;
+        out.push({ start: to, name: heldOn });
+        out.sort((a, b) => a.start - b.start);
+    }
+    return out;
+}
+
+export function mirrorChords(sheet, before, after) {
+    const bars = sheet.bars;
+    const spans = sectionSpans(after, bars.length);
+    const range = (bar, count) => [bars[bar].start, bar + count < bars.length ? bars[bar + count].start : sheet.total];
+    const edited = spans.filter((span) => {
+        const [from, to] = range(span.bar, span.bars);
+        return !samePattern(patternIn(before.chords, from, to), patternIn(after.chords, from, to));
+    });
+    const touched = new Set(edited.map((span) => span.bar));
+    const done = [];
+    const skipped = [];
+    let chords = after.chords;
+    for (const span of edited) {
+        for (const other of spans) {
+            if (touched.has(other.bar) || sectionKind(other.name) !== sectionKind(span.name)) continue;
+            const count = Math.min(span.bars, other.bars);
+            const [from, to] = range(span.bar, count);
+            const was = patternIn(before.chords, from, to);
+            const now = patternIn(after.chords, from, to);
+            if (samePattern(was, now)) continue;
+            const [start, end] = range(other.bar, count);
+            const alike = bars.slice(other.bar, other.bar + count).every((bar, index) =>
+                bar.editable !== false && bar.length === bars[span.bar + index].length);
+            const written = alike && samePattern(patternIn(chords, start, end), was)
+                ? writePattern(chords, start, end, now, sheet.total) : null;
+            if (!written) {
+                if (!skipped.some((one) => one.bar === other.bar)) skipped.push(other);
+                continue;
+            }
+            chords = written;
+            touched.add(other.bar);
+            done.push(other);
+        }
+    }
+    const kept = skipped.filter((span) => !touched.has(span.bar));
+    const brief = (list) => list.map((span) => ({ bar: span.bar, bars: span.bars, name: span.name }))
+        .sort((a, b) => a.bar - b.bar);
+    return { model: done.length ? { ...after, chords } : after, done: brief(done), skipped: brief(kept) };
+}
+
+export function clipOf(model, sheet, ids, starts) {
+    const chosen = new Set(ids);
+    const total = sheet.total;
+    const notes = {};
+    let first = Infinity;
+    let last = -Infinity;
+    for (const part of PARTS) {
+        notes[part] = model.notes[part].filter((n) => chosen.has(n.id));
+        for (const n of notes[part]) {
+            first = Math.min(first, n.start);
+            last = Math.max(last, n.start + n.length);
+        }
+    }
+    const picked = new Set(starts);
+    const spans = chordSpans(model, total).filter((c) => picked.has(c.start));
+    const bare = first === Infinity;
+    for (const c of bare ? spans : []) {
+        first = Math.min(first, c.start);
+        last = Math.max(last, c.end);
+    }
+    if (first === Infinity) return null;
+    const origin = sheet.bars[barAt(sheet, first)].start;
+    const endBar = barAt(sheet, Math.max(first, last - 1));
+    const after = endBar + 1 < sheet.bars.length ? sheet.bars[endBar + 1].start : total;
+    const chords = spans
+        .map((c) => ({ at: Math.max(c.start, bare ? c.start : origin) - origin, name: c.name,
+                       end: Math.min(c.end, bare ? c.end : after) - origin }))
+        .filter((c) => c.at < c.end);
+    const clipped = {};
+    for (const part of PARTS) {
+        clipped[part] = notes[part].map((n) => ({ at: n.start - origin, length: n.length, pitch: n.pitch }));
+    }
+    return { origin, span: after - origin, notes: clipped, chords };
+}
+
+export function clipReach(clip, routes, withChords) {
+    const pieces = routes.flatMap(([from]) => clip.notes[from].map((n) => [n.at, n.at + n.length]));
+    if (withChords) pieces.push(...clip.chords.map((c) => [c.at, c.end]));
+    if (!pieces.length) return null;
+    return { from: Math.min(...pieces.map((p) => p[0])), to: Math.max(...pieces.map((p) => p[1])) };
+}
+
+export function pasteClip(model, sheet, clip, at, routes, withChords) {
+    const total = sheet.total;
+    let changed = model;
+    let next = model.next;
+    const ids = [];
+    for (const [from, to] of routes) {
+        const placed = clip.notes[from].map((n) => ({ start: at + n.at, length: n.length, pitch: n.pitch }));
+        if (!placed.length) continue;
+        const low = Math.min(...placed.map((n) => n.start));
+        const high = Math.max(...placed.map((n) => n.start + n.length));
+        if (low < 0 || high > total) return null;
+        const kept = [];
+        for (const n of changed.notes[to]) {
+            if (n.start + n.length <= low || n.start >= high) kept.push(n);
+            else if (n.start < low) kept.push({ ...n, length: low - n.start });
+        }
+        for (const n of placed) {
+            kept.push({ id: next, ...n });
+            ids.push(next);
+            next += 1;
+        }
+        changed = { ...withPart(changed, to, kept), next };
+    }
+    let starts = [];
+    if (withChords && clip.chords.length) {
+        const from = at + clip.chords[0].at;
+        const to = at + Math.max(...clip.chords.map((c) => c.end));
+        if (from < 0 || to > total) return null;
+        const pattern = clip.chords.map((c) => [c.at - clip.chords[0].at, c.name]);
+        const chords = writePattern(changed.chords, from, to, pattern, total);
+        if (!chords) return null;
+        changed = { ...changed, chords };
+        starts = clip.chords.map((c) => at + c.at);
+    }
+    if (!ids.length && !starts.length) return null;
+    return { model: changed, ids, starts };
+}
+
+export function shortcutLetter(event) {
+    const key = String(event.key || "").toLowerCase();
+    if (/^[a-z]$/.test(key)) return key;
+    const code = String(event.code || "");
+    return /^Key[A-Z]$/.test(code) ? code.slice(3).toLowerCase() : key;
+}
+
 function barSignature(notes, chords, start, end) {
     const inside = notes
         .filter((n) => n.start < end && n.start + n.length > start)
@@ -454,6 +842,41 @@ export function voiceMiddle(model) {
     const pitches = model.notes.Vocal.map((n) => n.pitch).sort((a, b) => a - b);
     if (!pitches.length) return null;
     return (pitches[Math.floor((pitches.length - 1) / 2)] + pitches[Math.floor(pitches.length / 2)]) / 2;
+}
+
+const KEY_NAME_RE = /^([A-G])(#|b)?(m?)$/;
+
+export function keyChoices(key, middle = null) {
+    const found = KEY_NAME_RE.exec(String(key ?? "").trim());
+    if (!found) return [];
+    const minor = found[3] === "m";
+    const tonic = NATURAL[found[1]] + SHIFT[found[2] || ""];
+    const roots = minor ? MINOR_ROOTS : MAJOR_ROOTS;
+    const [low, high] = VOICE_WINDOW;
+    const centre = (low + high) / 2;
+    const known = typeof middle === "number" && Number.isFinite(middle);
+    const inside = (shift) => !known || (middle + shift >= low && middle + shift <= high);
+    const choices = [];
+    for (let step = -5; step <= 6; step++) {
+        let shift = step;
+        if (step === 6 && known && Math.abs(middle - 6 - centre) < Math.abs(middle + 6 - centre)) shift = -6;
+        const other = shift > 0 ? shift - 12 : shift + 12;
+        if (shift !== 0 && !inside(shift) && inside(other)) shift = other;
+        const name = step ? roots[(((tonic + step) % 12) + 12) % 12] + (minor ? "m" : "") : found[0];
+        choices.push({ name, shift });
+    }
+    return choices;
+}
+
+export function shiftWords(shift) {
+    const step = Math.trunc(Number(shift)) || 0;
+    if (!step) return "nowhere";
+    return (step > 0 ? "up " : "down ") + Math.abs(step) + (Math.abs(step) === 1 ? " semitone" : " semitones");
+}
+
+export function keyMove(shift) {
+    if (!shift) return "";
+    return (shift > 0 ? "+" : "\u2212") + Math.abs(shift);
 }
 
 export function pitchSpan(model) {
@@ -527,27 +950,35 @@ export function headerFacts(abc) {
 }
 
 export const MARK_PREFIX = "%yue2-words ";
-const MARK_LINE = /^%yue2-words ([0-9a-f]{16})[ \t\r]*$/;
+const MARK_LINE = /^%yue2-words ([0-9a-f]{16})( keep)?[ \t\r]*$/;
+const KEEP = " keep";
 
 export function splitMark(text) {
     let words = null;
+    let keep = false;
     const kept = [];
     for (const line of String(text ?? "").split("\n")) {
         const found = MARK_LINE.exec(line);
-        if (found) words = found[1];
-        else kept.push(line);
+        if (found) {
+            words = found[1];
+            keep = Boolean(found[2]);
+        } else {
+            kept.push(line);
+        }
     }
-    return { score: kept.join("\n").trim(), words };
+    return { score: kept.join("\n").trim(), words, keep };
 }
 
-export function attachMark(score, words) {
+export function attachMark(score, words, keep = false) {
     const clean = String(score ?? "").replace(/\s+$/, "");
-    return words ? clean + "\n" + MARK_PREFIX + words : clean;
+    return words ? clean + "\n" + MARK_PREFIX + words + (keep ? KEEP : "") : clean;
 }
 
-export function editValue(text, base, words) {
+export function editValue(text, base, words, keep = false) {
     const clean = String(text ?? "").trim();
-    return clean && clean !== String(base ?? "").trim() ? attachMark(clean, words) : "";
+    if (!clean) return "";
+    if (clean !== String(base ?? "").trim()) return attachMark(clean, words, keep);
+    return keep && words ? attachMark(clean, words, keep) : "";
 }
 
 export class History {
@@ -581,6 +1012,14 @@ export class History {
         if (!this.done.length) return null;
         if (undone) this.undone = undone;
         return this.done.pop();
+    }
+
+    get lastDone() {
+        return this.done.length ? this.done[this.done.length - 1] : null;
+    }
+
+    get lastUndone() {
+        return this.undone.length ? this.undone[this.undone.length - 1] : null;
     }
 
     get canUndo() {
@@ -636,4 +1075,98 @@ export function midiFacts(facts) {
     return [facts.bars + (facts.bars === 1 ? " bar" : " bars"), facts.bpm + " BPM", facts.meter,
         facts.key && "Key " + facts.key, clock(facts.seconds), moved && "voice " + moved,
         facts.karaoke && "karaoke words"].filter(Boolean).join(" \u00b7 ");
+}
+
+export const WORD_KINDS = ["fit", "spare", "crowd"];
+export const WORD_REACH = 8;
+export const WORD_ROWS = 2;
+export const WORD_LINES_LISTED = 10;
+
+export const WORDS_BARE =
+    "This score names no section, so the words are not drawn under it. The node lays the lyrics along "
+    + "such a tune when it sings, on bars it chooses then.";
+export const WORDS_NONE = "The lyrics have no sung line, so there is nothing to draw under the notes.";
+export const WORDS_FIT =
+    "Every line has a note for each of its syllables. Measured on 28 songs: YuE2 then sings a word on the "
+    + "note it is drawn under about nine times in ten, and within one note nearly always.";
+export const WORDS_OFF =
+    "The lines in amber have more or fewer syllables than notes. There YuE2 sings its own way: syllables "
+    + "left over run past the phrase, and with too few the next line can start early. Change the notes or "
+    + "the words until the line fits.";
+export const WORDS_UNPAIRED =
+    "The sections of the lyrics could not be told from the sections of the score, so the lines are laid "
+    + "along the whole song.";
+
+export function inOrder(notes) {
+    return [...(notes || [])].sort((a, b) => a.start - b.start || a.pitch - b.pitch);
+}
+
+export function nextOn(notes, index, pitch, reach = WORD_REACH) {
+    for (let at = index + 1; at < notes.length && at <= index + reach; at++) {
+        if (notes[at].pitch === pitch) return notes[at];
+    }
+    return null;
+}
+
+export function wordPlaces(notes, laidNotes, view) {
+    const ends = new Map();
+    const placed = [];
+    for (const [index, line, text] of laidNotes) {
+        const note = notes[index];
+        if (!note || note.start < view.from) continue;
+        if (note.start > view.to) break;
+        const left = view.x(note.start);
+        const wanted = Math.min(view.width(text, index, line), view.room);
+        let found = null;
+        for (let down = 1; down <= WORD_ROWS && !(found && !found.clipped); down++) {
+            const pitch = note.pitch - down;
+            if ((ends.get(pitch) ?? -Infinity) > left) continue;
+            const next = nextOn(notes, index, pitch);
+            const room = Math.min(view.room, next ? view.x(next.start) - 2 - left : view.room);
+            if (room >= wanted) found = { pitch, width: wanted, clipped: false };
+            else if (!found && room >= view.least) found = { pitch, width: room, clipped: true };
+        }
+        if (!found) continue;
+        ends.set(found.pitch, left + found.width);
+        placed.push({ index, line, text, left, ...found });
+    }
+    return placed;
+}
+
+export function wordsLaid(payload) {
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.lines)
+        || !Array.isArray(payload.notes)) return null;
+    const lines = payload.lines.filter((row) => row && WORD_KINDS.includes(row.kind));
+    if (lines.length !== payload.lines.length) return null;
+    return {
+        bare: Boolean(payload.bare),
+        paired: payload.paired !== false,
+        lines,
+        notes: payload.notes.filter((row) => Array.isArray(row) && Number.isInteger(row[0])
+            && Number.isInteger(row[1]) && typeof row[2] === "string" && Boolean(lines[row[1]])),
+        spare: (Array.isArray(payload.spare) ? payload.spare : []).filter(Number.isInteger),
+        sung: Number(payload.sung) || 0,
+    };
+}
+
+function counted(count, noun) {
+    return count + " " + noun + (count === 1 ? "" : "s");
+}
+
+export function wordsFacts(laid, problem) {
+    if (problem) return { text: "words not shown", title: String(problem), warn: false };
+    if (!laid) return null;
+    if (laid.bare) return { text: "words not shown", title: WORDS_BARE, warn: false };
+    if (!laid.lines.length) return { text: "no words", title: WORDS_NONE, warn: false };
+    const off = laid.lines.filter((row) => row.kind !== "fit");
+    const apart = laid.paired ? "" : "\n\n" + WORDS_UNPAIRED;
+    if (!off.length) return { text: "words fit", title: WORDS_FIT + apart, warn: !laid.paired };
+    const listed = off.slice(0, WORD_LINES_LISTED).map((row) => "\u2022 " + row.text + " \u2014 "
+        + counted(row.syllables, "syllable") + ", " + (row.notes ? counted(row.notes, "note") : "no note left"));
+    if (off.length > listed.length) listed.push("\u2022 and " + (off.length - listed.length) + " more");
+    return {
+        text: (laid.lines.length - off.length) + " of " + counted(laid.lines.length, "line") + " fit",
+        title: WORDS_OFF + "\n\n" + listed.join("\n") + apart,
+        warn: true,
+    };
 }

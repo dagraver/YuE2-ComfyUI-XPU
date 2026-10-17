@@ -152,12 +152,43 @@ def pinned_attention(backend: str):
             finally:
                 answering[0].decoding = None
 
+        def _capture(self):
+            """Upstream's rehearsals and recording, the recording then replayed once; see ``launched``.
+
+            Upstream's rehearsals and its recording already wrote the step's
+            slot past the prompt, and set the positions back after. The replay
+            writes that slot once more and the positions are set back again;
+            the first real step overwrites the slot before anything reads it.
+            """
+            super()._capture()
+            if self.graph is not None:
+                launched(self.graph)
+                self.positions.copy_(self.initial_positions)
+
     cuda_graph.GraphAR = PinnedGraphAR
     try:
         yield
     finally:
         cuda_graph.GraphAR = original
         cuda_graph.F = functional
+
+
+def launched(graph) -> None:
+    """Replay a graph just recorded, so it is never let go of before it has run.
+
+    Under the cudaMallocAsync allocator -- ComfyUI's default with CUDA 13 --
+    memory a graph allocates exists only once the graph has run. A graph let
+    go of before its first replay gives its addresses back, while torch still
+    counts the allocations it made as its own, so the next recording is handed
+    an address torch thinks is taken. Seen on 2026-10-07: a song cancelled
+    while its step was being recorded stopped at the first token, the next run
+    failed while recording with "address returned by cudaMallocAsync already
+    exists in ptr_info", and ComfyUI died. A stand cancelling at the first
+    token after the recording did the same, every time; cancelled 50 tokens
+    in, after 50 replays, it never did. Once a graph has run, what it
+    allocated outlives it until torch frees it, as a finished song's does.
+    """
+    graph.replay()
 
 
 def guarded_graph():
@@ -211,8 +242,8 @@ FUSED_BACKENDS = ("EFFICIENT_ATTENTION", "MATH")
 """Which SDPA kernels the widened acoustic call is allowed to land in.
 
 The fused one first, math kept enabled underneath it so that a shape the fused
-kernel refuses still runs instead of raising. Only a call cuDNN turns down comes
-this way -- on a card older than Ampere, say.
+kernel refuses still runs instead of raising. A call cuDNN turns down comes this
+way, and every call on a card older than Ampere, where cuDNN is not asked.
 """
 
 _REFUSED = set()
@@ -297,8 +328,24 @@ def _fused_kernel(device_type: str):
             yield
 
 
+QUERY_BLOCK = 1024
+"""How many queries one acoustic attention call takes at a time on a card older than Ampere.
+
+There the float16 call is meant for the efficient kernel, which streams and
+gives each query the same answer in blocks as whole. Should a torch build send
+it to math instead, math builds the matrix for this many queries rather than
+for the whole song: measured on 2026-10-07 on a 5090, a 312-second song's stage
+held 3.2 GiB that way, against more than 10 for the whole matrix.
+
+The answers are the same to the bit with and without the blocks; the time is
+not. On the 5090 they took that song's stage from 36 to 45 seconds, since one
+block leaves most of its 170 multiprocessors idle. An RTX 2060 has 30 of
+them; what the blocks cost there is not measured.
+"""
+
+
 @contextlib.contextmanager
-def fused_attention():
+def fused_attention(device=None):
     """Give the acoustic attention a kernel that streams: cuDNN, or the efficient one on widened K/V.
 
     Since 2026-09-24 a grouped call goes to cuDNN first, K/V as they are -- see
@@ -333,41 +380,91 @@ def fused_attention():
     and the semantic tokens come out the same; only the last stage renders
     differently, 20-40 dB below the song's own level. Two runs of one seed still
     agree with each other to the byte.
+
+    On a card older than Ampere -- ``device`` an RTX 20, a GTX 16 or before --
+    the whole stage runs under float16 autocast instead, cuDNN is not asked,
+    and each call takes QUERY_BLOCK queries at a time. There cuDNN's attention
+    does not run and the efficient kernel has no bfloat16, so the bfloat16
+    call fell to math: in one user's log the stage of a 99-second song took 884
+    seconds on an RTX 2060 SUPER, and a longer song never finished. In float16
+    the efficient kernel takes it, and the multiplies get the card's tensor
+    cores, which do float16 and not bfloat16. The weights stay bfloat16;
+    autocast casts each one for its multiply. Casting them in place and back
+    would change the smallest of them, and the next run of a seed would not be
+    the first.
+
+    Measured on 2026-10-07 on an RTX 5090, with the stage forced down this path,
+    on five stored songs of 38 to 312 seconds, each against the same stage in
+    float32: float16 lay 40-45 dB from it in the audio, bfloat16 -- what every
+    newer card sings -- 15-33 dB. So the old card renders more exactly, not
+    less. The largest value any layer reached was 17,549, against float16's
+    ceiling of 65,504, and nothing became infinite. It holds about 1.45x the
+    memory, which ``placement.HALF_WORK`` counts. Its speed on such a card is
+    not measured: there is none here.
     """
+    from . import attention as engines
     from .vendor.yue2 import nar
 
     original = nar.attention
+    half = engines.old_card(device)
 
     def attention(q, k, v, **kwargs):
         """Upstream's attention: grouped through cuDNN, or with the group repeated into the key heads."""
         card = getattr(getattr(q, "device", None), "type", "cpu")
         if _grouped(q, k, v):
-            if card == "cuda":
-                key = _call_key(q, k, kwargs)
-                if key not in _REFUSED:
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore")
-                            with _only_grouped_kernel():
-                                return original(q, k, v, **kwargs)
-                    except RuntimeError as error:
-                        if not _is_refusal(error):
-                            raise
-                        if not _REFUSED:
-                            log.info("[yue2_comfy.runtime] cuDNN does not take the acoustic attention on this "
-                                     "card, so its K/V are widened for the efficient kernel instead")
-                        _REFUSED.add(key)
+            key = _call_key(q, k, kwargs)
+            if card == "cuda" and not half and key not in _REFUSED:
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        with _only_grouped_kernel():
+                            return original(q, k, v, **kwargs)
+                except RuntimeError as error:
+                    if not _is_refusal(error):
+                        raise
+                    if not _REFUSED:
+                        log.info("[yue2_comfy.runtime] cuDNN does not take the acoustic attention on this "
+                                 "card, so its K/V are widened for the efficient kernel instead")
+                    _REFUSED.add(key)
             groups = int(q.shape[1]) // int(k.shape[1])
             k = k.repeat_interleave(groups, dim=1)
             v = v.repeat_interleave(groups, dim=1)
+        if half:
+            return _in_half(original, q, k, v, kwargs, card)
         with _fused_kernel(card):
             return original(q, k, v, **kwargs)
 
     nar.attention = attention
     try:
-        yield
+        with _half_stage(half):
+            yield
     finally:
         nar.attention = original
+
+
+def _in_half(original, q, k, v, kwargs, device_type):
+    """One acoustic call on a card older than Ampere: float16, QUERY_BLOCK queries at a time, answered in Q's dtype."""
+    import torch
+
+    kind = q.dtype
+    if kwargs.get("query_chunk_size") is None:
+        kwargs = dict(kwargs, query_chunk_size=QUERY_BLOCK)
+    with _fused_kernel(device_type):
+        answer = original(q.to(torch.float16), k.to(torch.float16), v.to(torch.float16), **kwargs)
+    return answer.to(kind)
+
+
+@contextlib.contextmanager
+def _half_stage(half: bool):
+    """The acoustic stage under float16 autocast on a card older than Ampere; nothing anywhere else."""
+    if not half:
+        yield
+        return
+    import torch
+
+    log.info("[yue2_comfy.runtime] this card is older than Ampere, so the acoustic stage runs in float16")
+    with torch.autocast("cuda", dtype=torch.float16):
+        yield
 
 
 def flash_attention_available() -> bool:

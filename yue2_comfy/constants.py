@@ -128,6 +128,19 @@ ASR_MARKER_SHAPE = [2048, 1024]
 models/YuE2 under its size's name. The projector into a 2048-wide language
 model is what tells the 1.7B build from the 0.6B one, which has the same files."""
 
+WHISPER_REPO = "openai/whisper-large-v3-turbo"
+WHISPER_DIRNAME = "whisper-large-v3-turbo"
+WHISPER_TOKENIZER_NAME = "tokenizer.json"
+WHISPER_GENERATION_NAME = "generation_config.json"
+WHISPER_FILES = (WEIGHTS_NAME, WHISPER_TOKENIZER_NAME, WHISPER_GENERATION_NAME)
+WHISPER_BYTES = 1617824864
+"""OpenAI's Whisper large-v3 turbo (MIT), the second hearing of a song's words, kept in models/YuE2.
+
+It is known by its size alone. Fine-tunes of it have the same tensors and
+names and hear differently, and a pack that took one for it would change its
+words without saying so. The generation config is where the release keeps
+the tokens it never writes and the ids of its languages."""
+
 ALIGNER_REPO = "Qwen/Qwen3-ForcedAligner-0.6B"
 ALIGNER_DIRNAME = "Qwen3-ForcedAligner-0.6B"
 ALIGNER_FILES = (WEIGHTS_NAME, CONFIG_NAME)

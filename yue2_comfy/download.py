@@ -584,6 +584,40 @@ def ensure_asr(settings: dict, progress=None) -> str:
     return folder
 
 
+def whisper_wanted() -> dict:
+    """Whisper large-v3 turbo's three files, into their own folder under models/YuE2."""
+    from .constants import WHISPER_DIRNAME, WHISPER_FILES
+
+    folder = os.path.join(paths.models_root(), WHISPER_DIRNAME)
+    return {name: os.path.join(folder, name) for name in WHISPER_FILES}
+
+
+def fetch_whisper(progress=None) -> str:
+    """OpenAI's release of Whisper large-v3 turbo, whatever 'download' names; the folder it landed in."""
+    from .constants import WHISPER_BYTES, WHISPER_REPO
+
+    wanted = whisper_wanted()
+    fetch(WHISPER_REPO, wanted, "Downloading Whisper large-v3 turbo ({})".format(human_size(WHISPER_BYTES)), progress)
+    return os.path.dirname(list(wanted.values())[0])
+
+
+def ensure_whisper(settings: dict, progress=None) -> str:
+    """Whisper's folder, fetched first when the machine has not got it and downloading is on."""
+    from . import discovery
+
+    found = discovery.find_whisper()
+    if found:
+        return found
+    if settings.get("download", "auto") == "off":
+        raise FileNotFoundError(
+            discovery.whisper_missing_message(paths.asr_roots())
+            + "\n\nOr set 'download' in YuE2 Options to 'auto', and the node will fetch it itself.")
+    folder = fetch_whisper(progress)
+    if progress is not None:
+        progress.text("Download finished")
+    return folder
+
+
 def aligner_wanted() -> dict:
     """The forced aligner's two files, into their own folder under models/YuE2."""
     from .constants import ALIGNER_DIRNAME, ALIGNER_FILES

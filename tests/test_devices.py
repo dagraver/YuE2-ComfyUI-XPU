@@ -219,12 +219,28 @@ def test_synchronize_does_nothing_on_the_processor(intel):
 
 def test_an_intel_card_is_an_accelerator_and_the_processor_is_not(intel):
     assert devices.is_accelerator("xpu:0") is True
-    assert devices.is_accelerator("cuda:0") is False
+    assert devices.is_accelerator("cuda:0") is True
     assert devices.is_accelerator("cpu") is False
     assert devices.is_accelerator("mps") is False
     assert devices.kind_of("XPU:2") == "xpu"
     assert devices.kind_of(types.SimpleNamespace(type="cuda")) == "cuda"
     assert devices.module_of("xpu:0") is intel
+    assert devices.module_of("cuda:0") is None
+
+
+def test_the_kind_of_device_is_known_before_torch_can_be_imported(monkeypatch):
+    """The pack is asked this while ComfyUI builds its node list, when torch may not answer yet."""
+
+    def missing():
+        raise ModuleNotFoundError("No module named 'torch'")
+
+    monkeypatch.setattr(devices, "_torch", missing)
+    assert devices.is_accelerator("xpu:0") is True
+    assert devices.is_accelerator("cuda:0") is True
+    assert devices.is_accelerator("cpu") is False
+    assert devices.count("xpu") == 0
+    assert devices.empty_cache("xpu:0") is None
+    assert devices.free_bytes("xpu:0") is None
 
 
 def test_the_llama_command_names_a_cuda_card_and_leaves_an_intel_one_to_its_build():

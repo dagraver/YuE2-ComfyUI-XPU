@@ -131,12 +131,14 @@ def test_the_plan_nodes_hand_their_score_to_the_score_editor(monkeypatch):
     cot = constants.DEFAULT_OPTIONS["cot"]
     assert written["ui"] == {staged.SCORE_UI: [SCORE],
                              staged.WORDS_UI: [edits.mark("a style", "words", cot)],
-                             staged.AUTO_SECONDS_UI: [constants.auto_seconds("words")]}
+                             staged.AUTO_SECONDS_UI: [constants.auto_seconds("words")],
+                             staged.SUNG_UI: ["words"]}
     plans = [{"score": "first"},
              {"score": "second", "style": "s", "lyrics": "l", "settings": {"cot": "melody"}}]
     assert staged.YuE2SelectPlan().select(plans, 1)["ui"] == {
         staged.SCORE_UI: ["second"], staged.WORDS_UI: [edits.mark("s", "l", "melody")],
-        staged.AUTO_SECONDS_UI: [constants.auto_seconds("l")]}
+        staged.AUTO_SECONDS_UI: [constants.auto_seconds("l")], staged.SUNG_UI: ["l"]}
+    assert staged.YuE2SelectPlan().select(plans, 0)["ui"][staged.SUNG_UI] == [""]
     assert staged.YuE2Plan.OUTPUT_NODE is True
     assert staged.YuE2SelectPlan.OUTPUT_NODE is True
     assert not getattr(staged.YuE2RenderPlan, "OUTPUT_NODE", False)
@@ -703,3 +705,16 @@ def test_a_device_that_cannot_be_read_says_nothing(monkeypatch):
 
     monkeypatch.setattr(devices, "resolve", broken)
     assert devices.cpu_notice("auto") is None
+
+
+def test_the_render_node_sings_an_edit_kept_for_new_words_and_says_so(monkeypatch):
+    calls = stub_singing(monkeypatch)
+    said = []
+    monkeypatch.setattr(staged, "announce",
+                        lambda node, findings, kind="notice": said.append(findings))
+    plan = plain_plan()
+    kept = edits.attach("X:1\nK:G\n", edits.mark("s", "other words", plan["settings"]["cot"]), keep=True)
+    staged.YuE2RenderPlan().render(plan, score_abc=kept, unique_id="9")
+    assert calls[0]["ids"] is None
+    assert calls[0]["abc"] == "X:1\nK:G", "the mark must never reach the model"
+    assert said == [[("warn", edits.KEPT)]]

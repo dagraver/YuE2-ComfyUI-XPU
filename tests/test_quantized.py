@@ -107,6 +107,33 @@ def test_the_packed_layer_answers_what_the_linear_answered():
     assert float(difference / plain.float().abs().mean()) < 0.02
 
 
+def test_the_float16_matrix_is_the_rows_times_their_scales():
+    packed = quantized.Packed(linear(out_features=8, in_features=64))
+    matrix = packed._scaled_half()
+    assert matrix.dtype == torch.float16
+    assert torch.equal(matrix, (packed.rows.float() * packed.scales.float()[:, None]).to(torch.float16))
+
+
+def test_under_float16_autocast_a_packed_layer_does_not_overflow():
+    """The acoustic stage of an old card runs under float16 autocast; see ``runtime.fused_attention``.
+
+    Each row here is 0.001 throughout, so its rows are all 127 and the true
+    answer is about 82, while the answer before its scale is 10.4 million --
+    infinite in float16. With the scale in the weight it is the true one.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("autocast to float16 multiplies on a CUDA card")
+    original = torch.nn.Linear(4096, 2, bias=False)
+    original.weight.data = torch.full((2, 4096), 0.001, dtype=torch.bfloat16)
+    packed = quantized.Packed(original).to("cuda")
+    hidden = torch.full((3, 4096), 20.0, dtype=torch.bfloat16, device="cuda")
+    with torch.autocast("cuda", dtype=torch.float16):
+        answer = packed(hidden)
+    expected = 4096 * 20.0 * float(original.weight.detach()[0, 0])
+    assert torch.isfinite(answer).all()
+    assert float((answer.float() - expected).abs().max()) < 0.01 * expected
+
+
 def test_the_packed_layer_carries_a_bias_when_there_is_one():
     original = torch.nn.Linear(HIDDEN, 4, bias=True).to(torch.bfloat16)
     hidden = torch.randn(2, HIDDEN, dtype=torch.bfloat16)

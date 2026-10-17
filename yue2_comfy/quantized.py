@@ -109,10 +109,27 @@ class Packed(torch.nn.Module):
         self.lora_up = up
 
     def forward(self, hidden):
-        answer = F.linear(hidden, self.rows.to(hidden.dtype)) * self.scales
+        if torch.is_autocast_enabled():
+            answer = F.linear(hidden, self._scaled_half())
+        else:
+            answer = F.linear(hidden, self.rows.to(hidden.dtype)) * self.scales
         if self.lora_down is not None:
             answer = answer + F.linear(F.linear(hidden, self.lora_down), self.lora_up)
         return answer if self.bias is None else answer + self.bias
+
+    def _scaled_half(self):
+        """The matrix for a multiply under float16 autocast: each row's scale in the weight, not in the answer.
+
+        Autocast is on only for the acoustic stage on a card older than Ampere;
+        see ``runtime.fused_attention``. There the usual order overflows: before
+        its scale an answer is 127 over its row's largest weight times the true
+        one, hundreds of times, and the true ones reach about 17,500 in this
+        model, past float16's 65,504. Found on 2026-10-07 with that stage forced
+        to float16 on a 5090: every low_vram song came out non-finite. The
+        matrix is put together in float32 and then cast, which is what autocast
+        does to a bfloat16 weight, at the price of writing it once more.
+        """
+        return (self.rows.float() * self.scales.float()[:, None]).to(torch.float16)
 
     def extra_repr(self):
         return "in_features={}, out_features={}, int8".format(

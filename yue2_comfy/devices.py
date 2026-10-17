@@ -338,9 +338,13 @@ def is_accelerator(device) -> bool:
 
     Answers for CUDA and XPU alike, which is what the callers that used to write
     ``device.type == "cuda"`` before emptying a cache or reading free memory
-    meant all along.
+    meant all along. Read from the device's own name, not from torch: the
+    question is which kind of device this is, and a caller that asks it while
+    torch cannot yet be imported -- or in a test process that has none -- still
+    gets the true answer. Every operation built on it no-ops safely when there is
+    no module to ask.
     """
-    return module_of(device) is not None
+    return kind_of(device) in ACCELERATORS
 
 
 def empty_cache(device=None) -> None:
