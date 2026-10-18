@@ -7,6 +7,48 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.13.3 - 2026-10-18
+
+### Fixed
+
+- **Switching `audio` off on `YuE2 Edit Track` opened another song.** The
+  square beside `audio` switches the input off, and the node then edits the
+  song named in its hidden `song_key` field. Only `Saved songs...` wrote that
+  field, so a user who edited a song from `Load Audio`, unticked the square
+  and pressed Render was handed whatever song had been picked there before,
+  with their edits laid on it: in their log a song of 186 seconds was edited,
+  and the next run opened one of 282. Every run on a song joined to `audio`
+  now writes that song into the field, so with the square unticked the node
+  goes on with the song it was editing; a song opened with `Saved songs...`
+  since then still comes first. See [YuE2 Edit Track](README.md#yue2-edit-track).
+- **A list of edits made on one song is no longer laid on another.** The edits
+  are bars, seconds and lines of the song they were made on, and on another
+  song they cut and sang whatever stood in those places, without a word. The
+  track window now writes the list together with the song it was made on, and
+  the node refuses it on any other song. The refusal names both songs by
+  length, the time each was made and the start of its style, and says to
+  press `Reset track` or to join the first song again. A list written by
+  0.13.2 or earlier names no song and is read as before.
+
+### Changed
+
+- **`Saved songs...` opens a song while one is joined to `audio`.** Its button
+  was greyed out then, and the window explained that the square on the node
+  had to be unticked first. The button now reads `Switch 'audio' off and open`
+  and does both; ticking the square again goes back to the joined song.
+  Choosing the song the node is already on only unticks the square and keeps
+  its edits. See [Saved songs](README.md#saved-songs).
+- **`Break...` names both sections, and a selected section gets the break
+  after it.** The list named only the section the break went before, and a
+  section selected on the strip got the break in front of it, where a user
+  who selects a chorus means after it; the break seemed to land at random. A
+  selection now gets the break at its end, or at the section line nearest its
+  end; with nothing selected it still goes before the first chorus. Each entry
+  of the list names the section before the break and the one after it, with
+  the time, and the line under the list says it in words: `Plays 4 bars after
+  the chorus, before the verse`. See
+  [What an edit can do](README.md#what-an-edit-can-do).
+
 ## 0.13.2 - 2026-10-14
 
 ### Added

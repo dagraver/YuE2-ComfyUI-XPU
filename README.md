@@ -1181,8 +1181,8 @@ other YuE2 pack has it either.
 ![YuE2 Edit Track before its first run, titled Edit the song. The audio input wired in from the left with a green ticked square beside it, options under it, and the audio output wired on to the right. The takes widget at 2, then the Edit track..., Saved songs... and Reset track buttons over a panel reading No edits: the song is handed on as it came in. Not drawn yet: open the track and press Render](docs/node_edit_song.png)
 
 *The node as template 11 has it. The ticked square beside `audio` is the switch:
-untick it, and the song chosen with `Saved songs...` is edited instead, without
-running the node that sings into `audio`.*
+untick it, and the node goes on with the song it was editing, or one opened with
+`Saved songs...`, without running the node that sings into `audio`.*
 
 **Outputs**
 
@@ -1196,9 +1196,10 @@ running the node that sings into `audio`.*
   `YuE2 Render Plan` or `YuE2 Decode Latents`, or a FLAC or WAV of one loaded
   with `Load Audio`. Optional: with nothing joined, the node opens the song
   chosen with `Saved songs...`. The square beside this input on the node
-  switches it off -- then the chosen song is edited, and the node wired in is
-  not run for it, so a song sung before a restart is not sung again to edit
-  one bar of it.
+  switches it off -- then the node goes on with the song it last edited, or
+  one opened with `Saved songs...` since, and the node wired in is not run for
+  it, so a song sung before a restart is not sung again to edit one bar of it.
+  Opening a song with `Saved songs...` unticks the square.
 - `takes` -- how many takes a retake, new words, new notes or a song that goes
   on sings, to choose between by ear. Two by default. A cut and a move have one
   result each.
@@ -1208,7 +1209,10 @@ running the node that sings into `audio`.*
   `cfg_scale` and the LoRA adapters it was sung with -- comes from the song
   itself, so that an edit sounds like the song it goes into.
 - `edits`, `song_key` -- the list of edits and the chosen song, written by the
-  track window and by `Saved songs...` and hidden behind them.
+  track window and by `Saved songs...` and hidden behind them. Every run on a
+  song joined to `audio` writes that song into `song_key`. The list says which
+  song it was made on, and on another song the node refuses it rather than
+  cut and sing whatever stands in its bars.
 
 **Which songs.** The pack keeps every song it sings -- its score, its tokens
 and its latents, see [Saved songs](#saved-songs) -- and the node finds the song
@@ -1307,11 +1311,13 @@ same rule the node uses.*
   song 2 to 24 ms off at the seams, where the pieces joined as they were left
   it 76 to 146 ms off, and that was heard.
 - **Break...** puts an instrumental break of 1 to 16 bars, four by default,
-  before a section; the arrows move it by beats, for a phrase that runs across
-  the bar line. The model writes those bars with nothing for the voice, and the
-  take with the least voice in them is kept. Over four songs 7 breaks of 12
-  came out free of the voice, and a rap was sung over every time, so the node
-  says when a voice is left.
+  between two sections, and the list names both, the one before and the one
+  after. A selected section gets the break after it, and with nothing selected
+  it goes before the first chorus. The arrows move it by beats, for a phrase
+  that runs across the bar line. The model writes those bars with nothing for
+  the voice, and the take with the least voice in them is kept. Over four
+  songs 7 breaks of 12 came out free of the voice, and a rap was sung over
+  every time, so the node says when a voice is left.
 
 A song sung with `cot` at `off` has no score and so no bars. It is selected and
 edited by seconds, and the edits that need a score -- notes, going on, a move
@@ -1336,7 +1342,10 @@ decode away.*
 - A double click, or `Open this song`, puts the song on the node, which then
   opens it without singing anything: the song is decoded from its latents, 1.1
   to 1.7 seconds for four minutes. The bars found on a song are kept beside
-  it, so opening it again takes about two seconds instead of ten.
+  it, so opening it again takes about two seconds instead of ten. While a
+  song is joined to `audio` the button reads `Switch 'audio' off and open`: it
+  unticks the square beside `audio` on the node, and ticking it again goes
+  back to the joined song.
 - `Keep each song's sound beside it` keeps the sound as well, as FLAC -- 53
   percent of the samples' size, read back in 0.2 s, sample for sample.
   `Delete them` beside it deletes the kept sounds and leaves the songs.

@@ -74,6 +74,19 @@ def test_an_edit_list_reads_as_the_window_wrote_it():
     assert track.read(track.written((first, second, third)), takes=2) == (first, second, third)
 
 
+def test_a_list_may_name_the_song_it_was_made_on():
+    """The window writes {"song": key, "edits": [...]}; a bare list, as every older one is, names none."""
+    edits = '[{"op": "cut", "bars": [2, 4]}]'
+    named = '{"song": "%s", "edits": %s}' % ("ab" * 32, edits)
+    assert track.read(named) == track.read(edits)
+    assert track.song_of(named) == "ab" * 32
+    for text in (edits, "", None, "not json", '{"edits": []}', '{"song": 5, "edits": []}'):
+        assert track.song_of(text) == "", text
+    for text in ('{"song": 5, "edits": []}', '{"song": "x"}', '{"song": "x", "edits": {}}'):
+        with pytest.raises(ValueError, match="does not hold a JSON list"):
+            track.read(text)
+
+
 def test_an_edit_list_that_is_not_one_is_refused_in_words_a_person_can_act_on():
     for text in ("{}", "[1, 2]", "not json", '"a string"'):
         with pytest.raises(ValueError):

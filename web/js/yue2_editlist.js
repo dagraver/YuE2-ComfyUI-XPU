@@ -251,30 +251,43 @@ function editOf(item, index, takes) {
 }
 
 export function readEdits(text, takes = 1) {
-    if (text === null || text === undefined) return { edits: [], error: "" };
-    if (typeof text !== "string") return { edits: [], error: NOT_A_LIST };
+    if (text === null || text === undefined) return { edits: [], error: "", song: "" };
+    if (typeof text !== "string") return { edits: [], error: NOT_A_LIST, song: "" };
     const body = text.trim();
-    if (!body) return { edits: [], error: "" };
+    if (!body) return { edits: [], error: "", song: "" };
     let found = null;
     try {
         found = JSON.parse(body);
     } catch (error) {
-        return { edits: [], error: NOT_A_LIST };
+        return { edits: [], error: NOT_A_LIST, song: "" };
     }
-    if (!Array.isArray(found)) return { edits: [], error: NOT_A_LIST };
+    let song = "";
+    if (found && typeof found === "object" && !Array.isArray(found)) {
+        if (found.song !== undefined && typeof found.song !== "string") {
+            return { edits: [], error: NOT_A_LIST, song: "" };
+        }
+        song = (found.song || "").trim();
+        found = found.edits;
+    }
+    if (!Array.isArray(found)) return { edits: [], error: NOT_A_LIST, song: "" };
     const edits = [];
     for (let index = 0; index < found.length; index += 1) {
         try {
             edits.push(editOf(found[index], index, takes));
         } catch (error) {
-            return { edits: [], error: error.message };
+            return { edits: [], error: error.message, song };
         }
     }
-    return { edits, error: "" };
+    return { edits, error: "", song };
 }
 
-export function writeEdits(edits) {
-    return JSON.stringify((edits || []).map((edit) => {
+export function writeEdits(edits, song = "") {
+    const items = editItems(edits);
+    return song ? JSON.stringify({ song, edits: items }) : JSON.stringify(items);
+}
+
+function editItems(edits) {
+    return (edits || []).map((edit) => {
         const item = { op: edit.op };
         if (edit.bars) item.bars = [edit.bars[0], edit.bars[1]];
         else if (edit.seconds) item.seconds = [edit.seconds[0], edit.seconds[1]];
@@ -301,7 +314,7 @@ export function writeEdits(edits) {
             item.fade = edit.fade;
         }
         return item;
-    }));
+    });
 }
 
 export function newSeed() {
@@ -568,6 +581,38 @@ export function breakFor(to, length, takes, seed, knobs = {}, at = null) {
 export function breakLines(grid) {
     const count = barCount(grid);
     return sectionLines(grid).filter((bar) => bar > 0 && bar < count);
+}
+
+function breakSides(grid, to) {
+    const sections = grid && Array.isArray(grid.sections) ? grid.sections : [];
+    const ahead = sections.filter((section) => section.bar < to)
+        .sort((one, two) => two.bar - one.bar)[0];
+    const next = sections.find((section) => section.bar === to);
+    return [ahead ? ahead.name : "bar " + to, next ? next.name : "bar " + (to + 1)];
+}
+
+export function breakBetween(grid, to) {
+    const [ahead, next] = breakSides(grid, to);
+    return "after the " + ahead + ", before the " + next;
+}
+
+export function breakPair(grid, to) {
+    const [ahead, next] = breakSides(grid, to);
+    return ahead + " \u2192 " + next;
+}
+
+export function breakLineFor(grid, selection) {
+    const lines = breakLines(grid);
+    if (!lines.length) return null;
+    if (selection) {
+        const bars = selection.first !== null && selection.first !== undefined;
+        if (bars && lines.includes(selection.stop)) return selection.stop;
+        const seconds = lines.map((bar) => lineAt(grid, bar));
+        return lines[nearestIn(seconds, bars ? lineAt(grid, selection.stop) : selection.to)];
+    }
+    const chorus = grid.sections.find((section) => lines.includes(section.bar)
+        && labelOf(section.name) === "chorus");
+    return chorus ? chorus.bar : lines[0];
 }
 
 export function moveFor(first, stop, to) {

@@ -30,8 +30,8 @@ const SONGS_TOOLTIP =
     "Open a song this install has already sung, without singing it again. Everything an edit "
     + "needs was remembered when it was sung, so it comes back in a second or two -- which is "
     + "what a workflow opened after a restart is for. The song opened is drawn straight away: "
-    + "this node is run alone, and the track is waiting inside. A song joined to 'audio' wins "
-    + "over the one chosen here, and nothing is run while one is.";
+    + "this node is run alone, and the track is waiting inside. While a song is joined to "
+    + "'audio', opening one here switches 'audio' off.";
 
 const RESET_LABEL = "Reset track";
 const RESET_TOOLTIP =
@@ -297,9 +297,9 @@ const NO_BREAK_HERE =
     + "break between.";
 
 const BREAK_HOW =
-    "Choose the section the break goes before and how many bars it plays. The model writes the "
-    + "break's tune after the section before it, the way it writes a song; nothing is sung in "
-    + "it, and every bar after comes in later by its length.";
+    "Choose the two sections the break goes between and how many bars it plays. The model "
+    + "writes the break's tune after the first of them, the way it writes a song; nothing is "
+    + "sung in it, and every bar after comes in later by its length.";
 
 const BREAK_SUNG =
     "Each take writes and plays its own break. The node listens to every take for a voice left "
@@ -310,8 +310,8 @@ const BREAK_BARS_WHY = "How many bars the break plays, " + list.BREAK_BARS[0] + 
     + list.BREAK_BARS[1] + ".";
 
 const BREAK_BEFORE_WHY =
-    "The section the break goes before. Selecting a section on the strip before pressing "
-    + "Break\u2026 chooses it here.";
+    "Where the break goes: after one section and before the next. A section selected on the "
+    + "strip before pressing Break\u2026 gets the break after it.";
 
 const BREAK_EARLIER =
     "Put the break in a beat earlier: where the section's first line is sung ahead of its bar, "
@@ -596,14 +596,19 @@ function toggleAudio(node) {
 
 function chooseSong(node) {
     openSongs(node, nodeSong(node), audioJoined(node), async (row) => {
-        if (row.key === nodeSong(node)) return;
+        if (row.key === nodeSong(node)) {
+            if (audioJoined(node)) toggleAudio(node);
+            return;
+        }
         const { edits } = nodeList(node);
         if (edits.length && !(await confirmed("This node has " + edits.length
             + (edits.length === 1 ? " edit" : " edits")
             + " of the song it is on now. Opening another song throws them away.",
             { title: "Open another song?", ok: "Open it", cancel: "Stay on this one",
               danger: true }))) return;
+        if (audioJoined(node)) setWidgetValue(node, USE_AUDIO, false);
         setWidgetValue(node, SONG, row.key);
+        node.__yue2SongChosen = true;
         node.__yue2SongSaid = (row.style || "no style given") + " \u00b7 "
             + roll.clock(row.seconds || 0);
         writeList(node, []);
@@ -674,7 +679,12 @@ function nodeList(node) {
 }
 
 function writeList(node, edits) {
-    setWidgetValue(node, EDITS, edits.length ? list.writeEdits(edits) : "");
+    setWidgetValue(node, EDITS, edits.length ? list.writeEdits(edits, listSong(node)) : "");
+}
+
+function listSong(node) {
+    const drawn = node.__yue2TrackDrawn?.was;
+    return typeof drawn === "string" && drawn ? drawn : nodeList(node).song || "";
 }
 
 function sectionColor(name) {
@@ -1599,13 +1609,12 @@ class TrackWindow {
     breakFact(to, length, at = null, marked = false) {
         const grid = this.grid();
         if (!list.barCount(grid)) return "";
-        const section = (grid.sections || []).find((item) => item.bar === to);
         const bar = list.lineAt(grid, to);
         const next = list.lineAt(grid, Math.min(list.barCount(grid), to + 1));
         const about = Math.max(0, next - bar) * length;
         const place = this.breakPlaces(to).find((item) => item.at === (at ?? null));
-        return "Plays " + length + (length === 1 ? " bar" : " bars") + " before the "
-            + (section ? section.name : "bar " + (to + 1)) + " at " + roll.clock(bar)
+        return "Plays " + length + (length === 1 ? " bar " : " bars ") + list.breakBetween(grid, to)
+            + " at " + roll.clock(bar)
             + ", about " + about.toFixed(1) + " s; everything after it comes in that much later."
             + (place ? " It goes in at " + tenths(place.second) + ", " + beatsText(place.beats)
                 + (marked ? ", where the green mark is." : ".") : "");
@@ -2214,15 +2223,14 @@ class TrackWindow {
         });
         bars.addEventListener("keydown", (event) => this.breakKey(event));
         row.appendChild(bars);
-        row.appendChild(element("span", "yue2-t-dim", "bars before"));
+        row.appendChild(element("span", "yue2-t-dim", "bars between"));
         const before = document.createElement("select");
         before.title = BREAK_BEFORE_WHY;
         for (const bar of list.breakLines(grid)) {
-            const section = (grid.sections || []).find((item) => item.bar === bar);
             const option = document.createElement("option");
             option.value = String(bar);
-            option.textContent = (section ? "the " + section.name : "bar " + (bar + 1)) + " at "
-                + roll.clock(list.lineAt(grid, bar)) + ", bar " + (bar + 1);
+            option.textContent = list.breakPair(grid, bar) + ", " + roll.clock(list.lineAt(grid, bar));
+            option.title = list.breakBetween(grid, bar) + ", bar " + (bar + 1);
             before.appendChild(option);
         }
         before.value = String(this.breaking.to);
@@ -2293,17 +2301,7 @@ class TrackWindow {
     }
 
     breakBefore() {
-        const grid = this.grid();
-        const lines = list.breakLines(grid);
-        if (!lines.length) return null;
-        if (this.selection && this.selection.first !== null && this.selection.first !== undefined) {
-            if (lines.includes(this.selection.first)) return this.selection.first;
-            const seconds = lines.map((bar) => list.lineAt(grid, bar));
-            return lines[list.nearestIn(seconds, list.lineAt(grid, this.selection.first))];
-        }
-        const chorus = (grid.sections || []).find((section) => lines.includes(section.bar)
-            && list.labelOf(section.name) === "chorus");
-        return chorus ? chorus.bar : lines[0];
+        return list.breakLineFor(this.grid(), this.selection);
     }
 
     openBreak() {
@@ -3571,6 +3569,8 @@ const STYLE = `
 .yue2-t-wordrow { display: flex; gap: 6px; flex-wrap: wrap; }
 .yue2-t-nudge { min-width: 30px; padding: 2px 8px; }
 .yue2-t-nudges { align-items: center; margin-bottom: 4px; }
+.yue2-t-breakbox select { max-width: 100%; min-width: 0; }
+.yue2-t-breakbox .yue2-t-seed { width: 56px; }
 .yue2-t-words .yue2-t-now { background: rgba(240, 176, 88, 0.16); border-left-color: #F0B058;
     color: var(--input-text, #eee); }
 .yue2-t-words .yue2-t-over { background: rgba(255, 255, 255, 0.05);
@@ -3691,6 +3691,12 @@ app.registerExtension({
             const result = onExecuted?.apply(this, arguments);
             const drawn = message?.[TRACK_UI]?.[0];
             if (drawn && typeof drawn === "object") {
+                if (drawn.joined && typeof drawn.was === "string" && drawn.was
+                    && (audioOn(this) || !this.__yue2SongChosen)) {
+                    setWidgetValue(this, SONG, drawn.was);
+                    this.__yue2SongSaid = "";
+                }
+                this.__yue2SongChosen = false;
                 this.__yue2TrackDrawn = drawn;
                 this.__yue2TrackSong = message?.[AUDIO_UI]?.[0] || null;
                 this.__yue2TrackStamp = Date.now();

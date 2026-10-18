@@ -25,10 +25,12 @@ const EMPTY =
 const NO_MATCH = "No song here says that.";
 
 const JOINED =
-    "A song is joined to this node's 'audio', and that one wins: the graph is what a run is "
-    + "about. So nothing here can be opened while it is plugged in -- untick the square beside "
-    + "'audio' on the node, or unplug it, to edit a song chosen here. Everything else on this "
-    + "list still works: what is remembered can be read, labelled and deleted from here.";
+    "A song is joined to this node's 'audio', and while the square beside it is ticked that one "
+    + "is the song edited. Opening a song here unticks the square; tick it again on the node to "
+    + "go back to the joined song.";
+
+const OPEN = "Open this song";
+const OPEN_JOINED = "Switch 'audio' off and open";
 
 const VOICE_ONLY = "voice only";
 const VOICE_WHY =
@@ -321,7 +323,7 @@ export function openSongs(node, chosen, joined, onPick, onDrop) {
 
     const foot = element("div", "yue2-s-foot");
     const said = element("div", "yue2-s-said", "Reading the songs...");
-    const open = element("button", "yue2-go", "Open this song");
+    const open = element("button", "yue2-go", joined ? OPEN_JOINED : OPEN);
     const close = element("button", "", "Close");
     open.disabled = true;
     if (joined) open.title = JOINED;
@@ -360,7 +362,7 @@ export function openSongs(node, chosen, joined, onPick, onDrop) {
     }
 
     function openable(row) {
-        return Boolean(row) && !row.voice && !joined;
+        return Boolean(row) && !row.voice;
     }
 
     function take() {

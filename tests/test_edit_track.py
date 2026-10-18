@@ -11,6 +11,7 @@ times and a fourth run sings none.
 from __future__ import annotations
 
 import json
+import re
 import time
 import types
 
@@ -74,9 +75,9 @@ def torch():
     return pytest.importorskip("torch")
 
 
-def a_song(frames=FRAMES, score_text=RAP, lyrics=LYRICS, settings=None):
+def a_song(frames=FRAMES, score_text=RAP, lyrics=LYRICS, settings=None, style="a style"):
     """A song the store will take: the smallest one that is still a song."""
-    return songs.made("YuE2 Generate Song", "a style", lyrics, 7,
+    return songs.made("YuE2 Generate Song", style, lyrics, 7,
                       dict(settings or {"cot": "full"}), score_text, [11, 12, 13], None,
                       [1] * frames, [[3, 0, frames]], b"\0" * (frames * 64 * 4), RATE, 2,
                       frames * SAMPLES_A_FRAME)
@@ -1586,6 +1587,62 @@ def test_with_its_audio_switched_off_the_node_edits_the_song_chosen_by_key(stand
     assert payload(kept)["was"] == stand.name, "a joined song, switched off, is left alone"
     with pytest.raises(ValueError, match="square beside it ticked"):
         edit_track.YuE2EditTrack().edit(None, takes=2, song_key="", use_audio=False)
+
+
+def test_a_list_made_on_another_song_is_refused_and_says_which_songs(stand, monkeypatch, torch):
+    """The same report: a list of bars laid on another song cuts and sings whatever is there.
+
+    The window names the song it made the list on; the node refuses the list on
+    any other song, naming both by length and style, since a key means nothing
+    to a person. A bare list, as every list written before, is read as before.
+    """
+    a_decoder(monkeypatch, torch)
+    other = a_song(lyrics="[Verse]\nthe one picked days before",
+                   style="folk rock with funk influences, " * 4)
+    elsewhere = songs.remember(a_wave(torch, fill=0.3), RATE, other)
+    cut = '[{"op": "cut", "bars": [2, 4]}]'
+    named = '{"song": "%s", "edits": %s}'
+    with pytest.raises(ValueError) as refused:
+        run(stand, named % (elsewhere, cut))
+    said = str(refused.value)
+    assert "made on another song" in said and "'Reset track'" in said
+    made = r", made \d{4}-\d\d-\d\d \d\d:\d\d, "
+    assert re.search(r"another song \(0:21" + made + r"'folk rock with funk influences, folk rock "
+                     r"with funk influenc\.\.\.'\) than the one it has now \(0:21" + made
+                     + r"'a style'\)", said), said
+    assert stand.calls == []
+    assert payload(run(stand, named % (stand.name, cut)))["edits"]
+    assert payload(run(stand, cut))["edits"], "a list that names no song is read as before"
+    assert payload(run(stand, named % (elsewhere, "[]")))["edits"] == "[]", "no edits, no refusal"
+    with pytest.raises(ValueError, match="does not hold a JSON list"):
+        run(stand, named % ("not a key", cut))
+    gone = "cd" * 32
+    with pytest.raises(ValueError, match="another song \\(one no longer remembered\\)"):
+        run(stand, named % (gone, cut))
+
+
+def test_a_run_on_the_joined_song_says_so_and_names_the_song_for_song_key(stand, monkeypatch,
+                                                                          torch):
+    """The window writes 'was' into 'song_key' after such a run, so switching 'audio' off stays on it.
+
+    A user's report of 2026-10-18: a song from 'Load Audio' edited, the square
+    beside 'audio' unticked, and the next run opened a song picked days before
+    in 'Saved songs...', with the new edits laid on it -- the field had been
+    written by the picker alone.
+    """
+    a_decoder(monkeypatch, torch)
+    picked = a_song(lyrics="[Verse]\nthe one picked days before")
+    songs.remember(a_wave(torch, fill=0.3), RATE, picked)
+    stale = songs.key(a_wave(torch, fill=0.3), RATE)
+    joined = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=stale))
+    assert (joined["joined"], joined["was"]) == (True, stand.name)
+    off = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=joined["was"],
+                                                  use_audio=False))
+    assert (off["joined"], off["was"]) == (False, stand.name), "switched off, the same song"
+    picked_off = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=stale,
+                                                         use_audio=False))
+    assert (picked_off["joined"], picked_off["was"]) == (False, stale), (
+        "the field the old window left behind opens the other song, which is what the user saw")
 
 
 def test_every_row_of_the_takes_list_has_the_same_keys(stand):

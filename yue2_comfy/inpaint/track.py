@@ -507,22 +507,58 @@ def read(text, takes: int = 1) -> tuple:
     """The edits written in ``text``, checked; no text at all is no edits.
 
     ``takes`` is how many takes a retake asks for when it does not say, which
-    is the node's own widget.
+    is the node's own widget. The list is a JSON list of edits, or an object
+    holding one as ``edits`` beside ``song``, the key of the song the list was
+    made on (see ``song_of``).
     """
+    found = _listed(text)
+    return tuple(_edit(item, index, takes) for index, item in enumerate(found))
+
+
+def song_of(text) -> str:
+    """The key of the song the list in ``text`` was made on, or "" when it does not say.
+
+    The track window writes the list as ``{"song": key, "edits": [...]}``,
+    the key being the one the node handed it as ``was``: a list is bars,
+    seconds and lines of one song, and laid on another it cuts and sings
+    whatever happens to be there. A user's report of 2026-10-18 showed it
+    happen without a word, twice in one log. A bare list, as every list
+    written before then is, says nothing and is read as it always was.
+    """
+    if text is None or not isinstance(text, str):
+        return ""
+    body = text.lstrip("\ufeff").strip()
+    if not body:
+        return ""
+    try:
+        found = json.loads(body)
+    except ValueError:
+        return ""
+    song = found.get("song") if isinstance(found, dict) else ""
+    return song.strip() if isinstance(song, str) else ""
+
+
+def _listed(text) -> list:
+    """The JSON list of edits in ``text``, bare or under ``edits``, or a ValueError saying it is not one."""
     if text is None:
-        return ()
+        return []
     if not isinstance(text, str):
         raise ValueError(NOT_A_LIST)
     body = text.lstrip("\ufeff").strip()
     if not body:
-        return ()
+        return []
     try:
         found = json.loads(body)
     except ValueError:
         raise ValueError(NOT_A_LIST)
+    if isinstance(found, dict):
+        song = found.get("song", "")
+        if not isinstance(song, str):
+            raise ValueError(NOT_A_LIST)
+        found = found.get("edits")
     if not isinstance(found, list):
         raise ValueError(NOT_A_LIST)
-    return tuple(_edit(item, index, takes) for index, item in enumerate(found))
+    return found
 
 
 def written(edits) -> str:

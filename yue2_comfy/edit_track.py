@@ -46,7 +46,7 @@ from . import notation, songs
 from .constants import CATEGORY, DEFAULT_OPTIONS, FRAME_SECONDS, OPTIONS_TYPE
 from .edits import EDIT_TRACK_UI
 from .inpaint import grid, ops, track
-from .progress import (Band, NodeProgress, announce, interrupted, refuse,
+from .progress import (Band, NodeProgress, announce, format_duration, interrupted, refuse,
                        translate_interrupt)
 
 log = logging.getLogger(__name__)
@@ -181,6 +181,12 @@ GONE = (
     "Press 'Saved songs...' and pick another, or join the audio to 'audio'."
 )
 
+ANOTHER_SONG = (
+    "The edits on this node were made on another song ({}) than the one it has now ({}). Press "
+    "'Reset track' on the node to edit this song from the start, or join the song they were "
+    "made on to 'audio'."
+)
+
 NOT_A_KEY = (
     "The 'song_key' field does not hold a song key. It is written by 'Saved songs...' on the "
     "node and is not meant to be typed; clear it and pick a song again."
@@ -189,7 +195,8 @@ NOT_A_KEY = (
 SONG_TOOLTIP = (
     "Which remembered song to edit when nothing is joined to 'audio'. Written by the 'Saved "
     "songs...' button on the node, which shows what this install has sung and what each one "
-    "is.\n\nThe song comes back from its latents, the last stage of singing it and nothing more: "
+    "is, and by every run on a song joined to 'audio', so switching 'audio' off stays on that "
+    "song.\n\nThe song comes back from its latents, the last stage of singing it and nothing more: "
     "about a second and a half for four minutes, against minutes to sing it again. The sound it "
     "makes is the same performance but not the same file to the bit, so the song answers to "
     "that sound too. With 'Keep each song's sound beside it' switched on in the 'Saved "
@@ -205,15 +212,17 @@ AUDIO_TOOLTIP = (
     "nothing joined here the node opens the song chosen with 'Saved songs...'.\n\n"
     "An MP3 or another lossy file changes nearly every sample, and the song behind it is not "
     "found.\n\n"
-    "The square beside this input on the node switches it off: the song chosen with 'Saved "
-    "songs...' is edited instead, and whatever sings into this input is not run for this node."
+    "The square beside this input on the node switches it off: the node goes on with the song it "
+    "last edited, or one chosen with 'Saved songs...', and whatever sings into this input is not "
+    "run for this node."
 )
 
 USE_AUDIO_TOOLTIP = (
     "Whether the song joined to 'audio' is the one edited; the square beside that input on the "
-    "node is this switch. Switched off, the node edits the song chosen with 'Saved songs...' and "
-    "leaves the link where it is -- and the node above is not run for it at all, so a song sung "
-    "before a restart is not sung again to edit one bar of it.\n\n"
+    "node is this switch. Switched off, the node goes on with the song it last edited, or one "
+    "chosen with 'Saved songs...' since, and leaves the link where it is -- and the node above "
+    "is not run for it at all, so a song sung before a restart is not sung again to edit one "
+    "bar of it. Opening a song with 'Saved songs...' switches it off.\n\n"
     "A run of the whole workflow still runs every node that something else needs, such as a "
     "'Save Audio' joined to the same song."
 )
@@ -250,7 +259,9 @@ EDITS_TOOLTIP = (
     "song that goes on, 'extend', takes a seed and takes, and the 'text' it goes on with, empty "
     "for a new ending alone; it selects no bars, going on from where the singing ends. A 'move' "
     "takes the bars of whole sections and 'to', the bar line they go to: where another section "
-    "starts, or the number of bars for the end."
+    "starts, or the number of bars for the end.\n\n"
+    "The window writes the list as {'song': key, 'edits': [...]}, and a list made on another "
+    "song is refused."
 )
 
 OPTIONS_TOOLTIP = (
@@ -1657,6 +1668,34 @@ def _also(waveform, song, name: str) -> None:
                     exc_info=True)
 
 
+SAID_STYLE = 60
+"""How much of a song's style a refusal quotes to say which song it means."""
+
+
+def _song_said(name: str, song=None) -> str:
+    """A song as a person knows it in a refusal: its length, when it was made, and the start of its style.
+
+    The key means nothing to anybody. The songs of one evening often share
+    a style word for word, and two of them measured on 2026-10-18 were 3:43
+    and 3:44 long, so the time each was made is what tells them apart, as
+    it is in 'Saved songs...'. A song no longer remembered says so.
+    """
+    if song is None:
+        try:
+            song = songs.store().get(name)
+        except ValueError:
+            song = None
+    if song is None:
+        return "one no longer remembered"
+    style = " ".join(str(song.style or "").split())
+    if len(style) > SAID_STYLE:
+        style = style[:SAID_STYLE].rstrip() + "..."
+    made = (", made " + time.strftime("%Y-%m-%d %H:%M", time.localtime(song.created))
+            if song.created else "")
+    return "{}{}, '{}'".format(format_duration(song.frames * FRAME_SECONDS), made,
+                               style or "no style given")
+
+
 class YuE2EditTrack:
     """A song in, the same song with part of it sung again or taken out."""
 
@@ -1706,6 +1745,9 @@ class YuE2EditTrack:
         has no graph above it yet -- a workflow opened after a restart, where
         singing the song again to edit a bar of it costs minutes. With
         'use_audio' off the link is left alone and the field decides.
+
+        A list that names the song it was made on (``track.song_of``) is
+        refused on any other: its bars belong to that song.
         """
         from .inpaint import core
         from .staged import adapters, session
@@ -1735,6 +1777,14 @@ class YuE2EditTrack:
             wanted = track.read(edits, int(takes))
         except ValueError as error:
             refuse(unique_id, str(error))
+        made_on = track.song_of(edits)
+        if wanted and made_on:
+            try:
+                made_on = songs.canonical(made_on)
+            except ValueError:
+                refuse(unique_id, track.NOT_A_LIST)
+            if made_on != name:
+                refuse(unique_id, ANOTHER_SONG.format(_song_said(made_on), _song_said(name, song)))
         settings = _settings(song, options, unique_id)
         adapters(settings, unique_id)
         sheet = notation.read(song.score) if song.score else None
@@ -1903,7 +1953,7 @@ class YuE2EditTrack:
             refuse(unique_id, str(stop))
 
         payload = self._payload(name, keyed, sound, rate, state, wanted, picks, shown,
-                                settings, timed, ears is not None and place is not None)
+                                settings, timed, ears is not None and place is not None, given)
         if shown is not None and _flagged(shown[1][shown[2]]):
             kept = shown[1][shown[2]]
             notices.append(("warn", "The join of the take kept scores {:.2f} where the song's own "
@@ -2336,14 +2386,20 @@ class YuE2EditTrack:
         return entry
 
     def _payload(self, name: str, keyed: str, sound, rate: int, state, wanted, picks,
-                 shown, settings, timed=None, hears=False) -> dict:
+                 shown, settings, timed=None, hears=False, joined=False) -> dict:
         """Everything the track window draws.
 
         ``song`` is the key the result is remembered under, empty when it could
         not be remembered; a run with no edits hands back the song it opened,
         so that key is the one it came in under. ``was`` is the key of the
         song that came in, which is the song's own even when the run was
-        handed one of its other names.
+        handed one of its other names. ``joined`` says it came in through
+        'audio' rather than by 'song_key', and then the window writes ``was``
+        into 'song_key': the list of edits is a list on that song, so with the
+        input switched off the next run goes on with it. Until 2026-10-18 the
+        field was written only by 'Saved songs...', and a user who edited a
+        song from 'Load Audio' and then switched the input off was handed a
+        song picked days before, with their edits laid on it.
         ``seconds`` is the length of the result; ``peaks`` and ``rms`` its wave,
         at most ``PEAKS`` values from 0 to 1 each; ``grid`` is ``grid.layout`` of the score on
         the result, None for a song without one, and ``score`` that score's text, which the
@@ -2383,7 +2439,8 @@ class YuE2EditTrack:
 
         timed = timed or {}
         drawn = _wave(sound)
-        payload = {"song": keyed, "was": name, "sung": _sampled(settings), "hears": bool(hears),
+        payload = {"song": keyed, "was": name, "joined": bool(joined),
+                   "sung": _sampled(settings), "hears": bool(hears),
                    "seconds": round(state.frames * FRAME_SECONDS, 3), "sample_rate": rate,
                    "peaks": drawn["peaks"], "rms": drawn["rms"], "grid": None,
                    "score": state.score or "", "lyrics": state.lyrics, "lines": timed.get("song"), "takes": [],
