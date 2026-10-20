@@ -614,6 +614,14 @@ Ollama 把它的模型存成普通的 GGUF，以摘要哈希命名，所以就�
 子进程里写歌，每首歌慢几秒，写得并不更差。这个 wheel 不列为依赖，是因为在 Windows
 上它通常要从源码编译，为一个可选节点和编译器耗上半小时，代价太大。
 
+在 Intel 显卡上，这个 wheel 必须是 **Vulkan** 构建 ——
+`pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan`
+—— 或者自行编译的 SYCL 构建，因为没有发布 SYCL wheel。普通的
+`pip install llama-cpp-python` 是 CPU 构建，节点包会直接采用它并在 CPU 上写歌，
+列表里的模型会比它本来会下载的 32 MB Vulkan 二进制文件慢很多倍。那些二进制文件
+已经通过同一个 Vulkan 驱动使用 Intel 显卡；有两块显卡时，它会把各层分到两块上，
+17 GB 的 Q4 正是这样放得下的。
+
 你已经有的 llama.cpp 会原样拿来用，按这个顺序找：`YUE2_LLAMA_BIN`，写进 ComfyUI
 用户文件夹里 `llama_bin.txt` 的路径，本节点包解压出来的运行时，最后是 `PATH`。
 前两个点名的位置，也是在 Linux 上用 CUDA 版 llama.cpp 的办法 —— 上游在 Linux 上
