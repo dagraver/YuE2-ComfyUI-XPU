@@ -735,6 +735,15 @@ slower per song and no worse at writing. The wheel is not a dependency because
 on Windows it usually builds from source, and half an hour with a compiler is a
 poor price for one optional node.
 
+On an Intel GPU the wheel has to be the **Vulkan** build --
+`pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan`
+-- or a SYCL build compiled by hand, since no SYCL wheel is published. The plain
+`pip install llama-cpp-python` is a CPU build, and the pack would take it and
+write on the processor, where a model from the list is many times slower than
+the 32 MB of Vulkan binaries it would otherwise fetch. Those binaries already
+use an Intel card through the same Vulkan driver, and with two of them they
+split the layers across both, which is how a 17 GB Q4 fits.
+
 An llama.cpp you already have is used as it is, and is looked for in this order:
 `YUE2_LLAMA_BIN`, a path written into `llama_bin.txt` in ComfyUI's user folder,
 the runtime this pack unpacked, then `PATH`. The two named ones are also the way
