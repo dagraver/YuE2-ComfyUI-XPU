@@ -1515,12 +1515,13 @@ are the ones a small card wants: `offload`, and `low_vram` under it.*
   resident between runs. The list offers `auto`, one entry per visible card and
   `cpu`: `cuda:0`, `cuda:1` and so on on an NVIDIA build, `xpu:0`, `xpu:1` on
   an Intel one. `auto` follows ComfyUI, which is also what to leave it at when
-  ComfyUI was started with `--cuda-device` or `--xpu-device`. Pin a second card
-  when the pack's model should not compete with ComfyUI's own for VRAM. An
-  Intel card writes and sings its tokens eagerly, as the processor does, because
-  the fixed-shape decode graph this pack captures between tokens is torch's
-  CUDA one; the song is the same, and it costs time per token rather than
-  quality.
+  ComfyUI was itself pinned to a card -- `--cuda-device` on an NVIDIA build,
+  `ONEAPI_DEVICE_SELECTOR=level_zero:1` or `ZE_AFFINITY_MASK=1` on an Intel one
+  with two. Pin a second card when the pack's model should not compete with
+  ComfyUI's own for VRAM. An Intel card records the same fixed-shape decode
+  graph between tokens, on `torch.xpu.XPUGraph`: on an Arc Pro B70 the token
+  loops that write the score and sing it went from 39.6 s and 111.8 s to 12.3 s
+  and 36.7 s, the same song to the last logit.
 - `attention_backend` -- the attention kernel for writing the score and
   singing it. `sdpa`, the default, is torch's own; `fast` splits the attention
   over torch's efficient kernel and needs nothing installed; `flash` uses

@@ -105,7 +105,8 @@ def pinned_attention(backend: str):
     plain ``torch.cuda.CUDAGraph`` just before recording and records with
     torch's default mode, under which another thread's memory query can abort
     the process; the one this class hands out records with ``CAPTURE_MODE``.
-    See ``guarded_graph``.
+    See ``guarded_graph``. An Intel card has no capture mode to guard against,
+    so there upstream's ``torch.xpu.XPUGraph`` is kept as it was made.
 
     This covers the AR stages only. The acoustic stage has its own kernel; see
     ``fused_attention``.
@@ -126,12 +127,24 @@ def pinned_attention(backend: str):
 
         @graph.setter
         def graph(self, value):
-            self._guarded = None if value is None else guarded_graph()
+            if value is None:
+                self._guarded = None
+            elif getattr(self.device, "type", None) == "xpu":
+                self._guarded = value
+            else:
+                self._guarded = guarded_graph()
 
         def __init__(self, *args, **kwargs):
             kwargs["attention_backend"] = attention.SDPA
             super().__init__(*args, **kwargs)
-            self.engine = attention.engine_for(name, self.device, getattr(self, "dtype", None))
+            try:
+                self.engine = attention.engine_for(name, self.device, getattr(self, "dtype", None))
+            except ValueError:
+                if getattr(self.device, "type", None) != "xpu":
+                    raise
+                log.info("[yue2_comfy.runtime] attention_backend '%s' is a CUDA kernel; this %s "
+                         "card decodes with sdpa instead", name, self.device.type)
+                self.engine = None
             if self.engine is not None:
                 if answering[0] is None:
                     answering[0] = attention.Functional(functional, self.engine)
@@ -191,8 +204,8 @@ def launched(graph) -> None:
     graph.replay()
 
 
-def guarded_graph():
-    """A CUDA graph that records with ``CAPTURE_MODE``, whatever mode its capture asks for.
+def guarded_graph(device=None):
+    """The graph a capture records into: CUDA's guarded one, or XPU's plain one.
 
     ``torch.cuda.graph`` passes its mode to the graph's own ``capture_begin``,
     so a graph that answers for the mode changes nothing else in the code that
@@ -203,7 +216,14 @@ def guarded_graph():
     ``torch.cuda.graph`` also passes ``check_input_liveness``; a ``capture_begin``
     that named only the pool and the mode refused it, and every song on such a
     torch failed at its first capture (issue #8).
+
+    XPU has no capture mode to guard against: ``torch.xpu.graph`` takes only the
+    graph, the pool and a stream, so the graph upstream makes is used as it is.
     """
+    if getattr(device, "type", None) == "xpu":
+        import torch
+
+        return torch.xpu.XPUGraph()
     return _guarded_class()()
 
 

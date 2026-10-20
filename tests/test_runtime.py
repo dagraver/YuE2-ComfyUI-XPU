@@ -514,3 +514,47 @@ def test_flash_is_not_claimed_where_there_is_no_cuda(monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert runtime.flash_attention_available() is False
+
+
+def test_an_intel_card_records_into_the_graph_it_made(monkeypatch):
+    """XPU has no capture mode to guard, so the graph upstream made is used as it is."""
+    pytest.importorskip("torch")
+    cuda_graph = pytest.importorskip("yue2_comfy.vendor.yue2.cuda_graph")
+    asked = []
+
+    class Upstream:
+        def __init__(self, *args, **kwargs):
+            self.device = types.SimpleNamespace(type="xpu")
+            self.dtype = None
+            self.graph = None
+
+    monkeypatch.setattr(runtime, "guarded_graph", lambda *a: asked.append(a) or "guarded")
+    monkeypatch.setattr(cuda_graph, "GraphAR", Upstream)
+    with runtime.pinned_attention("sdpa"):
+        graph = cuda_graph.GraphAR()
+        graph.graph = "an xpu graph"
+    assert graph.graph == "an xpu graph"
+    assert asked == []
+
+
+def test_the_capture_module_is_the_one_the_device_names():
+    """The step is recorded once; the module that owns graphs on the card is chosen here."""
+    torch = pytest.importorskip("torch")
+    cuda_graph = pytest.importorskip("yue2_comfy.vendor.yue2.cuda_graph")
+    assert cuda_graph.graph_api(torch.device("cuda")) is torch.cuda
+    assert cuda_graph.graph_class(torch.cuda) is torch.cuda.CUDAGraph
+    try:
+        xpu = torch.device("xpu")
+    except Exception:
+        pytest.skip("this torch has no XPU device type")
+    assert cuda_graph.graph_api(xpu) is torch.xpu
+    assert cuda_graph.graph_class(torch.xpu) is torch.xpu.XPUGraph
+
+
+def test_an_intel_card_gets_its_own_graph_from_the_guard():
+    torch = pytest.importorskip("torch")
+    try:
+        device = torch.device("xpu")
+    except Exception:
+        pytest.skip("this torch has no XPU device type")
+    assert isinstance(runtime.guarded_graph(device), torch.xpu.XPUGraph)

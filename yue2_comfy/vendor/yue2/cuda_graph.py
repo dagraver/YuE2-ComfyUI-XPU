@@ -3,12 +3,37 @@
 The graph predicts branch logits only. The caller combines logits and samples
 once, then passes that same token to ``step``. Prefixes retain independent RoPE
 positions and cache slots. No vLLM, Triton, or custom extension is imported.
+
+CUDA and XPU both record it: the module that owns the graph, the side stream and
+the capture context is chosen from the model's device, since the two expose the
+same API under different names.
 """
 from __future__ import annotations
 from numbers import Integral
 
+import logging
+
 import torch
 import torch.nn.functional as F
+
+log = logging.getLogger(__name__)
+
+
+def graph_api(device):
+    """The torch module that records and replays graphs on ``device``.
+
+    CUDA and XPU offer the same shape of API -- a graph object, a side stream to
+    rehearse on, and a context manager that captures into the graph -- so the
+    step is recorded once and the module that owns it is chosen here. The two
+    graphs themselves are named differently, which is what ``graph_class`` is
+    for.
+    """
+    return torch.xpu if device.type == "xpu" else torch.cuda
+
+
+def graph_class(api):
+    """The graph class of one of those modules: ``torch.xpu.XPUGraph`` or ``torch.cuda.CUDAGraph``."""
+    return getattr(api, "XPUGraph", None) or api.CUDAGraph
 
 
 class _PrefixCache:
@@ -63,8 +88,8 @@ class GraphAR:
         if getattr(model, "_yue2_fp8_originals", None) or any(
                 not isinstance(module, torch.nn.Linear) or module.weight.dtype != self.dtype for module in linears):
             raise ValueError("GraphAR only supports unquantized standard AR Linear layers; use eager for FP8")
-        if capture and self.device.type != "cuda":
-            raise ValueError("CUDA graphs require a CUDA model; capture=False is for diagnostics")
+        if capture and self.device.type not in {"cuda", "xpu"}:
+            raise ValueError("Graph capture requires a CUDA or XPU model; capture=False is for diagnostics")
         self.prefixes = [[int(token) for token in prefix] for prefix in prefixes]
         self.max_tokens, self.branches = int(max_tokens), len(prefixes)
         self.capacity = max(map(len, prefixes)) + self.max_tokens
@@ -170,19 +195,20 @@ class GraphAR:
 
     @torch.inference_mode()
     def _capture(self):
-        with torch.cuda.device(self.device):
-            current = torch.cuda.current_stream(self.device)
-            warmup = torch.cuda.Stream(device=self.device)
+        api = graph_api(self.device)
+        with api.device(self.device):
+            current = api.current_stream(self.device)
+            warmup = api.Stream(device=self.device)
             warmup.wait_stream(current)
-            with torch.cuda.stream(warmup):
+            with api.stream(warmup):
                 for _ in range(3):
                     self.positions.copy_(self.initial_positions)
                     self._decode()
                 self.positions.copy_(self.initial_positions)
             current.wait_stream(warmup)
-            torch.cuda.synchronize(self.device)
-            self.graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self.graph):
+            api.synchronize(self.device)
+            self.graph = graph_class(api)()
+            with api.graph(self.graph):
                 self.output = self._decode()
             # Warmup/capture wrote one future slot. The first real step
             # overwrites that slot in every layer before making it visible.
@@ -200,7 +226,13 @@ class GraphAR:
             logits.append(result.logits[:, -1])
         result = torch.cat(logits, dim=0)
         if self.capture and self.max_tokens > 1:
-            self._capture()
+            try:
+                self._capture()
+            except Exception:
+                log.warning("decoding without a graph: capture failed on %s", self.device.type,
+                            exc_info=True)
+                self.capture, self.graph = False, None
+                self.positions.copy_(self.initial_positions)
         self.ready = True
         return result
 

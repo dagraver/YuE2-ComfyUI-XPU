@@ -153,9 +153,9 @@ def engine_for(name: str, device, dtype=None):
 
     Both engines are CUDA kernels -- 'fast' is ``aten::_efficient_attention_forward``
     and 'flash' is flash-attn -- so an Intel card is told to use 'sdpa' rather
-    than to install something that cannot run there. In practice no graph is
-    built on a non-CUDA device, so nothing asks this on XPU today; the refusal
-    is what keeps a card that never had these kernels from being promised them.
+    than to install something that cannot run there. An Intel card does record a
+    decode graph now, so this is asked there too; ``runtime.pinned_attention``
+    answers the refusal by decoding with 'sdpa' and saying so in the log.
 
     'flash' is asked about the card before the package, so that an old card
     is told to use 'sdpa' rather than to install something that cannot run.

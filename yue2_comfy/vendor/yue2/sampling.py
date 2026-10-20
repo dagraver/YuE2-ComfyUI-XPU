@@ -98,7 +98,7 @@ def generate_tokens(model, prefix, sampling, seed, phase, negative=None, cfg_sca
 
     graph = None
     positive_cache = negative_cache = None
-    graph_enabled = use_cuda_graph and device.type == "cuda" and not getattr(model, "_yue2_fp8_originals", {})
+    graph_enabled = use_cuda_graph and device.type in {"cuda", "xpu"} and not getattr(model, "_yue2_fp8_originals", {})
     synchronize(device)
     start = time.perf_counter()
     try:

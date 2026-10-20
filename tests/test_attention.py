@@ -212,6 +212,25 @@ def test_sdpa_leaves_the_step_alone(monkeypatch):
         assert graph._decode() == "upstream" and graph.attention_backend == "sdpa"
 
 
+def test_a_cuda_engine_is_not_promised_to_an_intel_card(monkeypatch):
+    """'fast' is an aten CUDA kernel; an Intel card that records a graph decodes with sdpa instead."""
+    pytest.importorskip("torch")
+    cuda_graph = pytest.importorskip("yue2_comfy.vendor.yue2.cuda_graph")
+    from yue2_comfy import runtime
+
+    class Upstream:
+        def __init__(self, *args, attention_backend="auto", **kwargs):
+            self.attention_backend = attention_backend
+            self.device = types.SimpleNamespace(type="xpu")
+            self.dtype = None
+
+    monkeypatch.setattr(cuda_graph, "GraphAR", Upstream)
+    with runtime.pinned_attention("fast"):
+        graph = cuda_graph.GraphAR(object(), [[1]], 4)
+    assert graph.engine is None
+    assert graph.attention_backend == "sdpa"
+
+
 def test_a_step_writes_into_the_buffers_made_before_the_capture():
     """No tensor made or dropped around a step: the async allocator warns about both inside a capture."""
     torch = pytest.importorskip("torch")

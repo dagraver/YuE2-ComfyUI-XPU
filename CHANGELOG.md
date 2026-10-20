@@ -29,6 +29,17 @@ The fork's own changes, on top of upstream 0.13.2. Everything below
 - **The acoustic attention widens its K/V on an Intel card as it does on MPS.**
   The grouped-query call then reaches a streaming kernel instead of the math one,
   which is the memory `fused_attention` was written for.
+- **The score and the song are decoded from an XPU graph on an Intel card.** The
+  fixed-shape decode step was recorded with `torch.cuda.CUDAGraph` only, so an
+  Intel card ran the two token loops -- most of a song's time -- eagerly. The
+  capture now asks the module the card's device names for the graph, the stream
+  and the capture context, and `torch.xpu.XPUGraph` replays the step on XPU. On
+  an Arc Pro B70 (torch 2.14, 32 GB) with *1 - A song from one line*: the score
+  stage 39.6 -> 12.3 s, the performance 111.8 -> 36.7 s, and the whole run 222 ->
+  89 s without its first-run download, the logits of every step identical to the
+  eager ones. A capture that fails falls back to eager and says so in the log.
+  `fast` and `flash` remain CUDA kernels: a run on an Intel card that asks for
+  one decodes with `sdpa` and says why.
 - **Dutch is offered as a lyrics language.** It was already one the writer can
   write and Qwen3-ASR can name, but the `language` list stopped at Portuguese, so
   it could not be chosen and a hand-edited workflow asking for it was written as
