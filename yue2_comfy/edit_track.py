@@ -117,7 +117,12 @@ CACHE_BYTES = 1 << 30
 
 A take is a whole song as sound, 21 MB a minute in stereo at 48 kHz, so four
 takes of an edit of a four-minute song are 340 MB. Past the budget the edit
-used longest ago goes first, and is sung again if it is asked for again."""
+used longest ago goes first, and is sung again if it is asked for again --
+but never an edit of the list a song was last run with: that list goes over
+the budget rather than sing itself again (``Results``)."""
+
+WALKED_KEEP = 16
+"""How many songs' last lists ``Results`` remembers the edits of; a list is a few names, not sound."""
 
 JOIN_SLACK = 0.75
 """How far below the song's own join a take may score before it is worth saying so.
@@ -903,13 +908,30 @@ def _held_bytes(entry) -> int:
 
 
 class Results:
-    """The takes of every edit sung in this session, the ones used longest ago dropped first."""
+    """The takes of every edit sung in this session, the ones used longest ago dropped first.
+
+    A run walks its list from the first edit, so an edit of the list a song
+    was last run with is never dropped to make room: under plain
+    least-recently-used a list whose takes outgrew the budget dropped its
+    first edit for its last, the next run sang the first again and dropped the
+    second for it, and so on down the list -- every run sang every edit
+    (issue #13). A run holds what its song's last list walked and what it has
+    walked itself (``walked``, ``put``), and once it is through (``settle``)
+    the rest goes oldest first. If that is still past the budget, the edits
+    before the last keep only the take that was kept: the others were there
+    to compare, and comparing is over once another edit stands on that one.
+    Their seeds are written down, so a run does not sing them again for a
+    pick already made, and the window offers them as it offers the takes
+    left after a restart. Past that the list holds every kept take over the
+    budget, which a run singing all of it again would cost more than.
+    """
 
     def __init__(self, budget: int = CACHE_BYTES):
         self._held = collections.OrderedDict()
         self._sizes = {}
         self._budget = int(budget)
         self._bytes = 0
+        self._walked = collections.OrderedDict()
 
     def get(self, name: str):
         found = self._held.get(name)
@@ -917,22 +939,63 @@ class Results:
             self._held.move_to_end(name)
         return found
 
-    def put(self, name: str, entry) -> None:
-        """Hold ``entry`` under ``name``, measured now: an entry grown in place is measured again here."""
+    def put(self, name: str, entry, keep=()) -> None:
+        """Hold ``entry`` under ``name``, measured now, dropping the oldest entries not named in ``keep``.
+
+        An entry grown in place is measured again here.
+        """
         if name in self._held:
             self._held.pop(name)
             self._bytes -= self._sizes.pop(name)
         self._held[name] = entry
         self._sizes[name] = _held_bytes(entry)
         self._bytes += self._sizes[name]
-        while self._bytes > self._budget and len(self._held) > 1:
-            oldest, _gone = self._held.popitem(last=False)
-            self._bytes -= self._sizes.pop(oldest)
+        self._fit(set(keep) | {name})
+
+    def walked(self, song: str) -> frozenset:
+        """The names of the edits the last run on ``song`` walked through: what a run on it must not drop."""
+        return frozenset(self._walked.get(song, ()))
+
+    def settle(self, song: str, names) -> None:
+        """Write down the list a run on ``song`` walked, ``names`` in order, and fit the rest around it."""
+        names = list(names)
+        self._walked.pop(song, None)
+        self._walked[song] = tuple(names)
+        while len(self._walked) > WALKED_KEEP:
+            self._walked.popitem(last=False)
+        self._fit(set(names))
+        for name in names[:-1]:
+            if self._bytes <= self._budget:
+                break
+            self._trim(name)
+
+    def _fit(self, keep) -> None:
+        for name in [name for name in self._held if name not in keep]:
+            if self._bytes <= self._budget:
+                break
+            self._held.pop(name)
+            self._bytes -= self._sizes.pop(name)
+
+    def _trim(self, name: str) -> None:
+        """Let go of every take of one edit but the one kept, writing their seeds down as dropped."""
+        entry = self._held.get(name)
+        if entry is None or entry.get("kept") not in entry["takes"]:
+            return
+        others = [seed for seed in entry["takes"] if seed != entry["kept"]]
+        if not others:
+            return
+        for seed in others:
+            del entry["takes"][seed]
+        entry["dropped"] = set(entry.get("dropped", ())) | set(others)
+        self._bytes -= self._sizes[name]
+        self._sizes[name] = _held_bytes(entry)
+        self._bytes += self._sizes[name]
 
     def clear(self) -> None:
         self._held.clear()
         self._sizes.clear()
         self._bytes = 0
+        self._walked.clear()
 
     def size(self) -> int:
         return self._bytes
@@ -1852,7 +1915,7 @@ class YuE2EditTrack:
         history, notices, picks, shown, marks = [], [], [], None, []
         clock, state, current, sound = None, None, song, waveform
         keyed, timed, ears, place = name, {}, None, None
-        went = {}
+        went, walked, held = {}, [], RESULTS.walked(name)
         try:
             with stack:
                 stack.callback(_ears_off, settings, listened)
@@ -1906,6 +1969,7 @@ class YuE2EditTrack:
                         raise _Refused("Edit {}: {}".format(index + 1, error))
                     notices.extend(step.notices)
                     made = track.name(name, history, edit)
+                    walked.append(made)
                     asked = ""
                     if step.kind in ("words", "extend"):
                         asked = chr(10).join(step.now)
@@ -1917,7 +1981,8 @@ class YuE2EditTrack:
                         opens = found_by
                     hears = closes - (closes - opens) * HEARD_SHARE if asked else closes
                     entry = self._sung(loaded, current, sound, state, step, edit, made,
-                                       settings, Band(progress, opens, hears), unique_id)
+                                       settings, Band(progress, opens, hears), unique_id,
+                                       held | set(walked))
                     seeds = (0,) if _one_take(step) else edit.seeds()
                     if asked:
                         self._heard(entry, seeds, step, sound, rate, settings, made, released,
@@ -1926,6 +1991,7 @@ class YuE2EditTrack:
                     ordered = [entry["takes"].get(seed) for seed in seeds]
                     pick = edit.take if edit.take is not None else core.best(ordered)
                     kept = ordered[pick]
+                    entry["kept"] = kept.seed
                     history.append((edit, kept.seed))
                     picks.append(pick)
                     prior, earlier = state, sound
@@ -1969,6 +2035,8 @@ class YuE2EditTrack:
                                     dict(before, pieces=[(0.0, at), (at, prior.frames * FRAME_SECONDS)],
                                          sung=[(at, at, take.count * FRAME_SECONDS)]))
                         notices.extend(_break_notices(ordered, pick))
+                if walked:
+                    RESULTS.settle(name, walked)
                 released()
                 if wanted:
                     keyed = _remember(sound, _stamped(current, sound, name, song, marks))
@@ -2351,7 +2419,7 @@ class YuE2EditTrack:
         return times
 
     def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band,
-              unique_id=None):
+              unique_id=None, keep=()):
         """The takes of one edit: the ones already sung under this name, and the ones still missing.
 
         Only the takes the result needs are sung. An edit that already says
@@ -2362,7 +2430,10 @@ class YuE2EditTrack:
         this session's memory and a restart empties it. Their seeds are
         counted on from the edit's own, so any of them can be sung later and
         comes out the same take; the window offers them. An edit with nothing
-        kept yet sings all of them, because the pick is made among them.
+        kept yet sings all of them, because the pick is made among them --
+        all but the ones let go of to make room after the pick was made
+        (``Results``), which the pick never needs again. ``keep`` names what
+        the cache must not drop for these takes.
         """
         from .inpaint import core, ops
 
@@ -2371,7 +2442,10 @@ class YuE2EditTrack:
         seeds = (0,) if _one_take(step) else edit.seeds()
         if not _one_take(step) and edit.take is not None:
             seeds = (seeds[edit.take],)
-        missing = [seed for seed in seeds if seed not in entry["takes"]]
+        dropped = ()
+        if edit.take is None and entry.get("kept") in seeds:
+            dropped = entry.get("dropped", ())
+        missing = [seed for seed in seeds if seed not in entry["takes"] and seed not in dropped]
         if not missing:
             band.ratio(1.0)
             return entry
@@ -2426,7 +2500,9 @@ class YuE2EditTrack:
                     take.natural = entry["natural"]
         except ValueError as error:
             raise _Refused(str(error))
-        RESULTS.put(name, entry)
+        if entry.get("dropped"):
+            entry["dropped"] = set(entry["dropped"]) - set(entry["takes"])
+        RESULTS.put(name, entry, keep)
         return entry
 
     def _payload(self, name: str, keyed: str, sound, rate: int, state, wanted, picks,

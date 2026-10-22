@@ -7,6 +7,28 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.14.1 - 2026-10-22
+
+### Fixed
+
+- **`YuE2 Edit Track` sang a long list of edits again on every Render**
+  ([#13](https://github.com/pytraveler/YuE2-ComfyUI/issues/13)). The node
+  keeps the takes it has sung in memory, up to 1 GB, and every take is the
+  whole song: about 90 MB for four minutes. A run goes through its list from
+  the first edit, and once a list's takes passed that gigabyte the node
+  dropped the first edit to make room for the last; the next run sang the
+  first again and dropped the second for it, and so on down the list, so
+  every Render sang every edit and looked like a render of the whole song.
+  On a four-minute song that began around the sixth edit with two takes
+  each, and at the third or fourth with four. An edit on the list is now
+  never dropped to make room. The takes of edits that are no longer on the
+  list go first, then every edit but the last keeps only the take that was
+  kept, and past that the list stays in memory over the gigabyte. On a song
+  of 3:51 with four takes an edit, on an RTX 5090: three edits took 142
+  seconds, a fourth 58, and Render again on all four took 3 seconds and sang
+  nothing. An undo that makes a trimmed edit the last again shows its other
+  takes as `Sing it`. See [The track window](README.md#the-track-window).
+
 ## 0.14.0 - 2026-10-22
 
 ### Added

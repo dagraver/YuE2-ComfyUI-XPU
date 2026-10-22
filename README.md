@@ -1257,7 +1257,12 @@ same rule the node uses.*
   before the edit. `More takes` sings another, and keeping a different take
   sings nothing, since they are all sung already. The takes live in this
   session's memory: after a restart only the kept one is sung again, and the
-  rest show `Sing it`, the same seed giving back the same take.
+  rest show `Sing it`, the same seed giving back the same take. The memory
+  holds up to 1 GB of takes, about eleven of a four-minute song, and an edit
+  on the list is never let go of to make room, so Render on the same list
+  sings nothing again. Past that gigabyte the takes of edits taken off the
+  list go first; then the edits before the last keep only their kept take,
+  and an undo that makes one of them the last shows its others as `Sing it`.
 - **Knobs.** `Seed`, `Variety` and `Guide` set one edit's seed, temperature and
   text guidance; left alone they are what the song was sung with. `Fade`
   appears when a cut touches the first or last bar.

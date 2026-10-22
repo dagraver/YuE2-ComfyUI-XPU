@@ -1063,6 +1063,67 @@ def test_the_takes_kept_are_dropped_oldest_first_when_the_memory_fills():
     assert held.get("a") is not None and held.get("c") is not None
 
 
+TAKE_BYTES = FRAMES * SAMPLES_A_FRAME * 2 * 4
+"""What one take of the stand's song holds: every take is the whole song, stereo, in float32."""
+
+
+def retakes_on(count, take=None):
+    """``count`` retakes of bars 5 to 8, one on another, each with a seed of its own; ``take`` keeps a take of the last."""
+    edits = [{"op": "retake", "bars": [4, 8], "seed": 40 + 10 * index} for index in range(count)]
+    if take is not None:
+        edits[-1]["take"] = take
+    return json.dumps(edits)
+
+
+def test_a_list_past_the_memory_for_takes_sings_each_edit_once(stand, monkeypatch):
+    """Issue #13. A run walks its list from the first edit, and under plain least-recently-used a
+    list whose takes outgrew the memory dropped its first edit to make room for its last; the next
+    run sang the first again and dropped the second for it, and so on down the list, so every run
+    sang every edit. Here there is room for three takes, and the list grows to five edits of two."""
+    monkeypatch.setattr(edit_track, "RESULTS", edit_track.Results(budget=3 * TAKE_BYTES))
+    for count in range(1, 6):
+        stand.calls.clear()
+        run(stand, retakes_on(count))
+        assert len(stand.calls) == 1, "only the edit added is sung"
+        stand.calls.clear()
+        run(stand, retakes_on(count))
+        assert stand.calls == [], "a run of the same list sings nothing"
+
+
+def test_past_the_memory_the_edits_before_the_last_keep_only_the_take_kept(stand, monkeypatch):
+    """The other takes of an earlier edit are there to compare, and comparing is over once another
+    edit stands on it; the last edit keeps every take for the window. Undone back to the first
+    edit, its other take is offered as a seed to sing again, as a take is after a restart."""
+    monkeypatch.setattr(edit_track, "RESULTS", edit_track.Results(budget=3 * TAKE_BYTES))
+    first = payload(run(stand, retakes_on(1)))
+    drawn = payload(run(stand, retakes_on(2)))
+    assert [take["sung"] for take in drawn["takes"]] == [True, True]
+    assert edit_track.RESULTS.size() == 3 * TAKE_BYTES
+    stand.calls.clear()
+    back = payload(run(stand, retakes_on(1)))
+    assert stand.calls == []
+    assert back["chosen"] == first["chosen"] == 1
+    assert [take["sung"] for take in back["takes"]] == [False, True]
+    run(stand, retakes_on(1, take=0))
+    assert stand.calls == [("retake", 192, 414, (40,))]
+
+
+def test_a_run_on_another_song_does_not_set_a_list_singing_itself_again():
+    """Another song's takes may push a list's first edit out. The run that sings it again must
+    drop the other song's takes to make room, not the edits it is about to walk to."""
+    held = edit_track.Results(budget=160)
+    for name in ("a1", "a2", "a3"):
+        held.put(name, _entry(10), keep=held.walked("a"))
+    held.settle("a", ["a1", "a2", "a3"])
+    for name in ("b1", "b2"):
+        held.put(name, _entry(10), keep=held.walked("b"))
+    held.settle("b", ["b1", "b2"])
+    assert held.get("a1") is None and held.get("a2") is not None
+    held.put("a1", _entry(10), keep=held.walked("a"))
+    assert held.get("a2") is not None and held.get("a3") is not None
+    assert held.get("b1") is None and held.size() == 160
+
+
 def test_a_words_edit_sings_the_stretch_selected_with_the_new_words(stand):
     """The cheap path: the bars say where, so nothing is heard and no other model is loaded."""
     answer = run(stand, '[{"op": "words", "bars": [4, 8], "lines": [3, 4], '
