@@ -247,7 +247,8 @@ TAKES_TOOLTIP = (
 EDITS_TOOLTIP = (
     "The edits to make, as a JSON list, written by the track window. Empty means no edits: the "
     "node hands the song on as it is and draws the track.\n\n"
-    "Each edit is {'op': 'retake', 'cut', 'words', 'notes', 'extend' or 'move'} with either "
+    "Each edit is {'op': 'retake', 'cut', 'words', 'notes', 'extend', 'move', 'break' or "
+    "'restyle'} with either "
     "'bars': [first, stop] counting "
     "from 0, the second bar not included, or 'seconds': [from, to] for a song sung with cot "
     "'off', which has no score. A retake also takes a 'seed', how many 'takes' to sing, and "
@@ -259,7 +260,10 @@ EDITS_TOOLTIP = (
     "song that goes on, 'extend', takes a seed and takes, and the 'text' it goes on with, empty "
     "for a new ending alone; it selects no bars, going on from where the singing ends. A 'move' "
     "takes the bars of whole sections and 'to', the bar line they go to: where another section "
-    "starts, or the number of bars for the end.\n\n"
+    "starts, or the number of bars for the end. A 'break' takes 'to', the bar line it goes "
+    "before, and its 'length' in bars. A 'restyle' takes a seed and takes, the 'style' its bars "
+    "are sung in, 'melody' 'same' or 'new' (whole sections), 'octave' -1, 0 or 1, and 'also', "
+    "more bars sung in the same take.\n\n"
     "The window writes the list as {'song': key, 'edits': [...]}, and a list made on another "
     "song is refused."
 )
@@ -273,9 +277,9 @@ OPTIONS_TOOLTIP = (
 DESCRIPTION = (
     "Changes part of a finished song and hands back the whole song; everything outside the "
     "edit stays as it was.\n\n"
-    "Open 'Edit track...', select a stretch and press Retake, Cut, Notes..., Go on... or "
-    "Break...; click a line of the words to sing it with other words, or drag a section to "
-    "move it. Works on songs this pack has sung.\n\n"
+    "Open 'Edit track...', select a stretch and press Retake, Cut, Notes..., Go on..., "
+    "Break... or Style...; click a line of the words to sing it with other words, or drag a "
+    "section to move it. Works on songs this pack has sung.\n\n"
     "Hearing the words takes Qwen3-ASR and its word aligner, and finding the bars takes the "
     "voice separator; each is downloaded the first time it is needed."
 )
@@ -1018,6 +1022,35 @@ def _grid_of(name: str, song, waveform, rate: int, settings, unique_id, progress
     return clock
 
 
+def _measuring(settings, unique_id, path):
+    """How a restyle finds the bars of a song it sang in the new style: ``clock(song, waveform, sheet, bars, progress)``.
+
+    As a song's own grid is found (``_grid_of``): by its separated voice,
+    with the separator's weights at ``path``. The song is sung only a little
+    past the bars it is for, so its score is read as far as ``bars`` for the
+    measuring and the grid then carries the whole score's bar starts. Nothing
+    is kept: each take is a song of its own.
+    """
+    import dataclasses
+
+    from .vocals_only import voice_of
+
+    def clock(song, waveform, sheet, bars, progress):
+        rate = int(song.sample_rate)
+        heard = sheet if bars >= len(sheet["bars"]) else notation.read(notation.head(song.score,
+                                                                                     bars))
+        voice = voice_of({"waveform": waveform, "sample_rate": rate}, settings, unique_id, progress,
+                         path=path)["waveform"]
+        began = time.perf_counter()
+        found = grid.measured(heard, waveform, rate, voice=voice)
+        log.info("[yue2_comfy.edit_track] the song sung in the new style follows its score from "
+                 "%.2f s at %.4f of its tempo, placed by %s, in %.1f s", found.offset, found.rate,
+                 "the voice" if found.by_voice else "the mix", time.perf_counter() - began)
+        return dataclasses.replace(found, starts=grid.starts_of(sheet))
+
+    return clock
+
+
 def _words_file(name: str):
     """The path the word times for *name* are kept at, or None when there is nowhere to keep them."""
     folder = songs.store().folder
@@ -1386,7 +1419,7 @@ def _after(prior, step, take):
     try:
         return track.after(prior, step, take.count,
                            take.song.score if step.kind in track.WRITTEN else None,
-                           getattr(take, "sung", ()))
+                           getattr(take, "sung", ()), getattr(take, "laid", None))
     except Exception:
         log.debug("[yue2_comfy.edit_track] the bars of a take could not be worked out, so it is "
                   "heard whole", exc_info=True)
@@ -1434,7 +1467,7 @@ def _take_facts(take, index: int, chosen: int, name: str, rate: int, prior, step
     drawn = _wave(take.waveform)
     own = track.after(prior, step, take.count,
                       take.song.score if step.kind in track.WRITTEN else None,
-                      getattr(take, "sung", ()))
+                      getattr(take, "sung", ()), getattr(take, "laid", None))
     laid = None
     if own.sheet is not None and own.clock is not None:
         laid = grid.layout(own.sheet, own.clock, own.frames)
@@ -1876,7 +1909,7 @@ class YuE2EditTrack:
                     asked = ""
                     if step.kind in ("words", "extend"):
                         asked = chr(10).join(step.now)
-                    elif step.kind in ("retake", "notes") and ears is not None:
+                    elif step.kind in ("retake", "notes", "restyle") and ears is not None:
                         found_by = opens + (closes - opens) * TIMES_SHARE
                         asked = self._words_there(place, state, step, sound, rate, name, history,
                                                   Band(progress, opens, found_by), listened, went,
@@ -1884,12 +1917,12 @@ class YuE2EditTrack:
                         opens = found_by
                     hears = closes - (closes - opens) * HEARD_SHARE if asked else closes
                     entry = self._sung(loaded, current, sound, state, step, edit, made,
-                                       settings, Band(progress, opens, hears))
+                                       settings, Band(progress, opens, hears), unique_id)
                     seeds = (0,) if _one_take(step) else edit.seeds()
                     if asked:
                         self._heard(entry, seeds, step, sound, rate, settings, made, released,
                                     Band(progress, hears, closes), notices, listened, asked,
-                                    ears if step.kind in ("retake", "notes") else None)
+                                    ears if step.kind in ("retake", "notes", "restyle") else None)
                     ordered = [entry["takes"].get(seed) for seed in seeds]
                     pick = edit.take if edit.take is not None else core.best(ordered)
                     kept = ordered[pick]
@@ -1899,7 +1932,7 @@ class YuE2EditTrack:
                     edge = _edge(step, state.frames)
                     state = track.after(state, step, kept.count,
                                         kept.song.score if step.kind in track.WRITTEN else None,
-                                        getattr(kept, "sung", ()))
+                                        getattr(kept, "sung", ()), getattr(kept, "laid", None))
                     current, sound = kept.song, kept.waveform
                     if edge and edit.fade:
                         sound = _faded(sound, edit.fade, edge == "head", rate)
@@ -1953,7 +1986,8 @@ class YuE2EditTrack:
             refuse(unique_id, str(stop))
 
         payload = self._payload(name, keyed, sound, rate, state, wanted, picks, shown,
-                                settings, timed, ears is not None and place is not None, given)
+                                settings, timed, ears is not None and place is not None, given,
+                                current.style)
         if shown is not None and _flagged(shown[1][shown[2]]):
             kept = shown[1][shown[2]]
             notices.append(("warn", "The join of the take kept scores {:.2f} where the song's own "
@@ -2117,7 +2151,7 @@ class YuE2EditTrack:
             return
         entry["said"] = answers[0]["text"]
         entry["asked"] = asked
-        if step.kind in ("retake", "notes"):
+        if step.kind in ("retake", "notes", "restyle"):
             entry["was_heard"] = lines.heard(asked, answers[0]["text"])
             log.info("[yue2_comfy.edit_track] the song as it was is heard singing %d of the %d "
                      "words there: %s", entry["was_heard"][0], entry["was_heard"][1],
@@ -2316,7 +2350,8 @@ class YuE2EditTrack:
             _times_keep(disk, text, times, since, sections)
         return times
 
-    def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band):
+    def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band,
+              unique_id=None):
         """The takes of one edit: the ones already sung under this name, and the ones still missing.
 
         Only the takes the result needs are sung. An edit that already says
@@ -2356,6 +2391,15 @@ class YuE2EditTrack:
                                       band, interrupted)
                 for take in fresh:
                     entry["takes"][take.seed] = take
+            elif step.kind == "restyle":
+                from .vocals_only import separator_weights
+
+                path = separator_weights(settings, unique_id, band)
+                fresh = core.restyled(loaded(), song, waveform, state, step, edit.style,
+                                      edit.octave, missing, settings,
+                                      _measuring(settings, unique_id, path), band, interrupted)
+                for take in fresh:
+                    entry["takes"][take.seed] = take
             elif step.kind == "break":
                 first, stop = step.bars
                 fresh = core.broke(loaded(), song, waveform, step.start, step.score, step.lyrics,
@@ -2386,7 +2430,7 @@ class YuE2EditTrack:
         return entry
 
     def _payload(self, name: str, keyed: str, sound, rate: int, state, wanted, picks,
-                 shown, settings, timed=None, hears=False, joined=False) -> dict:
+                 shown, settings, timed=None, hears=False, joined=False, style="") -> dict:
         """Everything the track window draws.
 
         ``song`` is the key the result is remembered under, empty when it could
@@ -2439,7 +2483,7 @@ class YuE2EditTrack:
 
         timed = timed or {}
         drawn = _wave(sound)
-        payload = {"song": keyed, "was": name, "joined": bool(joined),
+        payload = {"song": keyed, "was": name, "joined": bool(joined), "style": style or "",
                    "sung": _sampled(settings), "hears": bool(hears),
                    "seconds": round(state.frames * FRAME_SECONDS, 3), "sample_rate": rate,
                    "peaks": drawn["peaks"], "rms": drawn["rms"], "grid": None,

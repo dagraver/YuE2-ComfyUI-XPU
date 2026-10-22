@@ -140,7 +140,7 @@ function what(row) {
         if (mark.op === "cut") return "cut " + where(mark) + DOT + "-" + roll.clock(mark.took || 0);
         const did = mark.op === "words" ? "new words " : mark.op === "notes" ? "new notes "
             : mark.op === "extend" ? "went on " : mark.op === "move" ? "moved "
-            : mark.op === "break" ? "break " : "retake ";
+            : mark.op === "break" ? "break " : mark.op === "restyle" ? "style " : "retake ";
         return did + where(mark) + DOT + roll.clock(Math.max(0, at[1] - at[0]));
     }).join(", ");
 }

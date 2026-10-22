@@ -7,6 +7,54 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
+## 0.14.0 - 2026-10-22
+
+### Added
+
+- **Part of a song in another style.** `Style...` in the track window of
+  `YuE2 Edit Track` sings the selected bars in another style -- other
+  instruments, another singer, another manner of singing -- with the same
+  words, and leaves the rest of the song as it was to the sample. A panel in
+  the words column holds the style, filled in with the song's own to be
+  changed, and three choices:
+  - `Same notes`, the song's tune, on any bars; or `New melody`, a tune the
+    model writes for the new style over whole sections -- a rapper's
+    recitative, say;
+  - the voice where it is, `An octave down` or `An octave up`, since a voice
+    sits where the notes are whatever the style says: for a man in a woman's
+    song, an octave down;
+  - when the selected section's name comes again, a tick that sings the other
+    choruses too, from the same take, so one singer sings them all.
+
+  Every take sings the song again in the new style as far as the selection
+  and lays its bars in, the bar before each seam sung again as a move does,
+  so a take costs about as long as singing the song that far: two takes of
+  both choruses of a ballad, rapped to a new melody, took 199 seconds on an
+  RTX 5090. With Qwen3-ASR already on the machine the take that sings the most
+  of the words is kept. A new melody finds the words of its sections by their
+  names, so where the model sang its sections in another order than the
+  lyrics give them, the sections from there on are refused, with the bar
+  named. The list writes the edit as `{"op": "restyle", "style": ...,
+  "melody": "same" or "new", "octave": -1, 0 or 1, "also": [...]}`, and
+  `Saved songs...` marks a song made by it as `style`. See
+  [What an edit can do](README.md#what-an-edit-can-do).
+- **Measured before it was built,** on the second verse of three songs,
+  English and Russian, and both choruses of a Russian ballad. A retake told
+  the new style in its prompt kept the old one: an audio tagger put it 0.24
+  of the way from the song to a song sung in the new style, where a plain
+  retake is 0.14, and a stronger text guide made it a lottery. The song sung
+  again in the new style and laid in reached 0.77, which is as close as two
+  songs sung in that style come to each other. Its words were sung 87 to 91
+  times in 100, against 90 for a retake, and the beat after the seams was 0
+  to 26 ms off. "Male vocal" in the style left a woman's song in her register
+  in 6 songs of 6, and the notes moved an octave toward the new voice moved
+  the voice in all 6; to the ear, the singer changed and no seam was heard.
+
+### Changed
+
+- The tooltip of `edits` on `YuE2 Edit Track` describes `restyle`, and
+  `break`, which it had left out.
+
 ## 0.13.3 - 2026-10-18
 
 ### Fixed

@@ -2377,3 +2377,80 @@ def test_a_song_with_no_score_is_heard_in_one_pass(torch, monkeypatch):
     drawn = payload(edit_track.YuE2EditTrack().edit({"waveform": wave, "sample_rate": RATE}, takes=2))
     assert [text for _key, text, _fill in calls] == [VERSE + "\n" + CHORUS]
     assert drawn["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9]]
+
+
+RESTYLE = ('[{"op": "restyle", "bars": [4, 8], "style": "hip hop, male rapper", "melody": "same",'
+           ' "octave": -1, "seed": 9, "takes": 2}]')
+"""The chorus in another style, an octave down, two takes."""
+
+
+def restyled_by_stand(torch, calls):
+    """A stand-in for the core's restyle: the song laid with itself, sung a little slower each take."""
+    from yue2_comfy.inpaint import core
+
+    def restyled(models, old, waveform, state, step, style, octave, seeds, settings, clock_of,
+                 progress=None, cancelled=None):
+        calls.append((style, octave, tuple(seeds), step.stretches, step.start, step.stop))
+        made = []
+        for index, seed in enumerate(seeds):
+            clock = grid.Grid(offset=0.6, rate=1.0 + 0.02 * index, tick=state.clock.tick,
+                              starts=state.clock.starts)
+            spans = track.restyle_spans(state, step, step.score)
+            laid = track.restyle_layout(state, step, state.sheet, clock, FRAMES + 10, spans)
+            frames = sum(stop - start for _which, start, stop in laid.pieces)
+            made.append(core.Take(seed=seed, waveform=a_wave(torch, frames, 0.1 * (index + 1)),
+                                  song=a_song(frames, score_text=RAP),
+                                  count=frames - (state.frames - step.stop) - step.start,
+                                  join=None, joins={}, ended=False, timing={}, laid=laid))
+        return made
+
+    return restyled
+
+
+def test_a_restyle_is_sung_by_the_core_and_drawn_as_takes_of_the_song_it_makes(stand, torch,
+                                                                              monkeypatch):
+    from yue2_comfy.inpaint import core
+
+    calls = []
+    monkeypatch.setattr(core, "restyled", restyled_by_stand(torch, calls))
+    monkeypatch.setattr("yue2_comfy.vocals_only.separator_weights",
+                        lambda settings, unique_id, progress: "separator.ckpt")
+    drawn = payload(run(stand, RESTYLE))
+    state = track.opened(a_song(), a_clock())
+    step = track.plan(state, track.read(RESTYLE)[0])
+    assert calls == [("hip hop, male rapper", -1, (9, 10), ((4, 8),), step.start, step.stop)]
+    assert drawn["kind"] == "restyle" and drawn["style"] == "a style"
+    assert drawn["at"] == [round(step.start * FRAME_SECONDS, 3),
+                           round(step.stop * FRAME_SECONDS, 3)]
+    assert [take["seed"] for take in drawn["takes"]] == [9, 10] and drawn["chosen"] == 0
+    first, second = drawn["takes"]
+    assert second["total"] > first["total"], "the slower take comes out longer"
+    assert drawn["before"]["index"] == -1
+    mark = songs.store().get(drawn["song"]).edit[0]
+    assert (mark["op"], mark["seed"]) == ("restyle", 9)
+    run(stand, RESTYLE)
+    assert len(calls) == 1, "the same restyle is not sung twice"
+
+
+def test_a_restyle_measures_the_song_it_sang_by_its_voice_on_the_bars_it_reached(monkeypatch):
+    """The grid of the song sung in the new style comes from its separated voice, on its score read as far as it was sung."""
+    found = []
+
+    def voice_of(audio, settings, unique_id, progress, path=None):
+        found.append((path, audio["sample_rate"]))
+        return {"waveform": "voice"}
+
+    monkeypatch.setattr("yue2_comfy.vocals_only.voice_of", voice_of)
+
+    def measured(sheet, waveform, rate, voice=None):
+        found.append((len(sheet["bars"]), voice))
+        return grid.Grid(offset=0.7, rate=1.0, tick=grid.tick_seconds(sheet),
+                         starts=grid.starts_of(sheet), by_voice=True)
+
+    monkeypatch.setattr(grid, "measured", measured)
+    clock = edit_track._measuring({}, "7", "separator.ckpt")
+    sung = a_song()
+    made = clock(sung, "sound", notation.read(RAP), 6, None)
+    assert found == [("separator.ckpt", RATE), (6, "voice")]
+    assert made.offset == 0.7 and made.starts == grid.starts_of(notation.read(RAP)), (
+        "measured on six bars, it carries the whole score's")

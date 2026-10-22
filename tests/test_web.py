@@ -1481,6 +1481,28 @@ EDIT_LISTS = [
     '[{"op": "break", "to": 13, "at": "2"}]',
     '[{"op": "break", "to": 13, "at": true}]',
     '[{"op": "retake", "bars": [1, 2], "length": 4}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "hip hop", "seed": 5, "takes": 2, "take": 1}]',
+    '[{"op": "restyle", "bars": [4, 8], "also": [[12, 16]], "style": " rap \\u3000",'
+    ' "melody": "new", "octave": -1, "vary": 1.5}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "melody": null, "octave": null,'
+    ' "also": null}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": 1.0}]',
+    '[{"op": "restyle", "bars": [4, 8]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": " \\u001c "}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": 5}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "' + "x" * 1001 + '"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "' + "\\u0431" * 1000 + '"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "melody": "rap"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": 2}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": true}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[6, 10]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8, 12], [1, 3]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8, 8]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8.5, 9]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": "8-12"}]',
+    '[{"op": "restyle", "seconds": [1.0, 2.0], "style": "x"}]',
+    '[{"op": "restyle", "style": "x"}]',
     '["retake"]',
     "[null]",
 ]
@@ -1505,13 +1527,17 @@ def run_edits(script: str):
 
 
 def spelled(edit):
-    """One of the node's edits in the shape the window holds it in."""
-    return {"op": edit.op, "bars": None if edit.bars is None else list(edit.bars),
-            "seconds": None if edit.seconds is None else list(edit.seconds),
-            "seed": edit.seed, "takes": edit.takes, "take": edit.take,
-            "vary": edit.vary, "guide": edit.guide, "fade": edit.fade,
-            "lines": None if edit.lines is None else list(edit.lines), "text": edit.text,
-            "score": edit.score, "to": edit.to, "length": edit.length, "at": edit.at}
+    """One of the node's edits in the shape the window holds it in; a restyle's own fields only on a restyle."""
+    shape = {"op": edit.op, "bars": None if edit.bars is None else list(edit.bars),
+             "seconds": None if edit.seconds is None else list(edit.seconds),
+             "seed": edit.seed, "takes": edit.takes, "take": edit.take,
+             "vary": edit.vary, "guide": edit.guide, "fade": edit.fade,
+             "lines": None if edit.lines is None else list(edit.lines), "text": edit.text,
+             "score": edit.score, "to": edit.to, "length": edit.length, "at": edit.at}
+    if edit.op == "restyle":
+        shape.update(style=edit.style, melody=edit.melody, octave=edit.octave,
+                     also=[list(stretch) for stretch in edit.also])
+    return shape
 
 
 @needs_node
@@ -1568,6 +1594,43 @@ def test_what_the_window_writes_is_what_the_node_sings():
     assert json.loads(track.written(edits)) == json.loads(written[0])
     assert len(track.read(written[1], 1)) == 2
     assert track.read(written[2], 1)[0].take is None, "a take kept that is no longer sung"
+
+
+RESTYLE_GRID = {
+    "bars": [2.0 * bar for bar in range(17)],
+    "sections": [{"name": "verse", "bar": 0, "bars": 4, "start": 0.0, "end": 8.0},
+                 {"name": "Chorus", "bar": 4, "bars": 4, "start": 8.0, "end": 16.0},
+                 {"name": "verse", "bar": 8, "bars": 4, "start": 16.0, "end": 24.0},
+                 {"name": "chorus", "bar": 12, "bars": 4, "start": 24.0, "end": 32.0}],
+}
+"""Two choruses, their names written two ways: the window takes them for one name, as the node does."""
+
+
+@needs_node
+def test_a_restyle_the_window_writes_is_the_one_the_node_sings():
+    from yue2_comfy.inpaint import track
+
+    made = run_edits("""
+        const grid = %s;
+        const chosen = e.selectBars(grid, 4, 8);
+        const also = e.sameSections(grid, chosen);
+        const edit = e.restyleFor(chosen, also, "  hip hop  ", "new", -1, 2, 77, { vary: 1.5 });
+        console.log(JSON.stringify([e.writeEdits([edit]), also,
+            e.sameSections(grid, e.selectBars(grid, 4, 7)),
+            e.sameSections(grid, e.selectBars(grid, 0, 8)), e.describeEdit(edit, 0),
+            e.describeEdit(e.restyleFor(chosen, [], "folk", "same", 0, 1, 5), 1)]));
+    """ % json.dumps(RESTYLE_GRID))
+    written, also, part, two, said, plain = made
+    assert also == [[12, 16]], "the other chorus"
+    assert part == [] and two == [], "only a whole section of one name has others like it"
+    edit, = track.read(written)
+    assert (edit.bars, edit.also, edit.style, edit.melody, edit.octave) == (
+        (4, 8), ((12, 16),), "hip hop", "new", -1)
+    assert (edit.seed, edit.takes, edit.vary) == (77, 2, 1.5)
+    assert json.loads(track.written([edit])) == json.loads(written)
+    assert said == ('1. Style "hip hop" in bars 5-8 and bars 13-16, a new melody, an octave down, '
+                    'variety 1.50')
+    assert plain == '2. Style "folk" in bars 5-8'
 
 
 @needs_node
@@ -2380,7 +2443,7 @@ def test_the_picker_tells_a_change_of_words_from_a_retake():
     what = source[source.index("function what(row) {"):source.index("function swapSaid(")]
     assert 'mark.op === "words" ? "new words " : mark.op === "notes" ? "new notes "' in what
     assert 'mark.op === "extend" ? "went on " : mark.op === "move" ? "moved "' in what
-    assert 'mark.op === "break" ? "break " : "retake "' in what
+    assert 'mark.op === "break" ? "break " : mark.op === "restyle" ? "style " : "retake "' in what
     mark = source[source.index("function badges(row, chosen) {"):source.index("function matches(")]
     assert '(mark.op === "words" || mark.op === "extend") && (mark.was || mark.now)' in mark
     assert "NEW_WORDS" in mark and "swapSaid" in mark, (
@@ -2455,7 +2518,7 @@ def test_a_change_of_words_offers_its_takes_as_a_retake_does():
     side, none kept but the join's, and More takes was not there. A change of notes has takes too."""
     source = TRACK.read_text(encoding="utf-8")
     assert ('return op === "retake" || op === "words" || op === "notes" || op === "extend" '
-            '|| op === "break";' in source)
+            '|| op === "break"\n        || op === "restyle";' in source)
     assert source.count('op === "retake"') == 1
     for pattern in ('op !== "retake"', 'kind === "retake"', 'kind !== "retake"'):
         assert pattern not in source, pattern

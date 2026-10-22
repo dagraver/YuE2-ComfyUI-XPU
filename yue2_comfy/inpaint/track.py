@@ -13,6 +13,8 @@ window writes::
      {"op": "extend", "text": "[Chorus]\nhold on ...", "seed": 9},
      {"op": "move", "bars": [13, 22], "to": 5},
      {"op": "break", "to": 13, "length": 4, "seed": 5, "takes": 2},
+     {"op": "restyle", "bars": [16, 24], "also": [[31, 39]], "style": "hip hop, male rapper",
+      "melody": "new", "octave": -1, "seed": 3, "takes": 2},
      {"op": "retake", "seconds": [48.0, 64.0], "seed": 7}]
 
 Bars count from 0 and the second number is not included: [12, 16] is bars 13
@@ -42,7 +44,13 @@ across it; the model chooses its seeds itself, so like a cut a move has no
 seed and one take. A break puts ``length`` bars of playing before the bar
 line ``to``, where a section starts: the model writes their score itself, as
 it does for a song that goes on, and plays them, and the section after goes
-on as it was sung. It has seeds and takes as a retake has.
+on as it was sung. It has seeds and takes as a retake has. A restyle sings
+its bars, and the bars ``also`` names, in another ``style``: each take
+sings the whole song again in that style as far as the last of them, from
+the song's own notes (``melody`` "same") or from a melody the model writes
+for the style (``melody`` "new", whole sections only), the voice moved
+``octave`` octaves; their bars are laid into the song and the bar before
+every seam is sung again, as a move does.
 
 What an edit does to the words and the score is worked out here as well, so
 the window can show it and the node can sing it without either of them
@@ -64,13 +72,13 @@ from . import grid, ops
 MAX_TAKES = 4
 """The most takes one edit may ask for at a time. Suno offers two; four is room to choose without a long wait."""
 
-OPS = ("retake", "cut", "words", "notes", "extend", "move", "break")
+OPS = ("retake", "cut", "words", "notes", "extend", "move", "break", "restyle")
 
 ONE_TAKE = ("cut", "move")
 """The edits that sing nothing new, so they have no seed and come out one way."""
 
-WRITTEN = ("extend", "break")
-"""The edits whose takes write their own score: the song after one has the score of the take kept."""
+WRITTEN = ("extend", "break", "restyle")
+"""The edits whose takes make their own score: the song after one has the score of the take kept."""
 
 NOT_A_LIST = ("The edits field does not hold a JSON list. The track window writes it -- open the "
               "track, or clear the field to start again.")
@@ -162,6 +170,72 @@ this, and never past the start of the section before or of the one after."""
 BREAK_AT = ("{} puts the break {} beats from bar line {}, and there it can go from {} to {} beats of "
             "it: up to two bars before the line and one after, within the sections on either side.")
 
+MELODIES = ("same", "new")
+"""What a restyle sings in its bars: the song's own notes there, or a melody the model writes for the style.
+
+Measured on 2026-10-21 on a ballad whose two choruses were given to a male
+rapper. Under its own notes moved an octave down a man sang them, but as the
+ballad's singer had; written by the model for the new style, they came out
+as recitative on four to six neighbouring notes, which the owner of the pack
+heard as the style ("not quite rap, but I like it")."""
+
+OCTAVES = (-1, 0, 1)
+"""How far a restyle moves the notes the new style sings, in octaves.
+
+The voice sits where the score puts it whatever the style says: "male vocal"
+in the style left a woman's song in her register in six songs sung in it of
+six, and the score moved an octave toward the new voice moved the voice in
+every one, measured on 2026-10-21. The owner heard the singer change."""
+
+STYLE_LONGEST = 1000
+"""The most characters a restyle's style may hold: far more than any style the model was taught on."""
+
+RESTYLE_PAST = 2
+"""Bars the song sung in the new style goes on past the last of its bars that are laid in.
+
+It is sung from the start of the song because a style is in the sound the
+model hears itself making, not in the prompt (a retake told the new style in
+its prompt kept the old one, 2026-10-21); it stops a little after what is
+needed, which the seam and the bars measured on it need."""
+
+RESTYLE_TAIL = 4.0
+"""Seconds the song sung in the new style is given past ``RESTYLE_PAST``, for a singer slower than the score."""
+
+NO_RESTYLE = ("This song was sung with 'cot' set to 'off', so it has no score for another style to "
+              "sing. Retake a stretch of it instead.")
+
+RESTYLE_WHERE = ("{} sings bars in another style, which go by the score: it selects bars, not "
+                 "seconds.")
+
+NO_STYLE = "{} gives no style to sing in."
+
+RESTYLE_APART = ("{} sings bars {} to {} and bars {} to {} in another style, and those overlap. "
+                 "Each stretch is sung once.")
+
+NEW_SECTIONS = ("A new melody is written for whole sections, and bar line {} is inside the {}. "
+                "Select whole sections, or keep the melody.")
+
+NEW_FIRST = ("A new melody is written on from the bars before it, and the first section has none. "
+             "Keep its melody, or start at a later section.")
+
+NEW_UNMATCHED = ("A new melody is written for the words of the sections it replaces, and the sections "
+                 "of the lyrics could not be matched with the score's. Keep the melody instead.")
+
+NEW_UNSUNG = ("A new melody is written for the words of the sections it replaces, and the {} at bar "
+              "{} sings none of them. Select sections that start and end with singing, or keep the "
+              "melody.")
+
+NEW_UNTOLD = ("A new melody is written for the words of the sections it replaces, and from the {} at "
+              "bar {} on the score's sections do not follow the lyrics', so which words they sing "
+              "cannot be told. Choose a section before it, or keep the melody.")
+
+WRITTEN_UNMATCHED = "the sections it wrote could not be matched with the words"
+
+WRITTEN_ORDER = "the sections it wrote for the words do not come in the song's order"
+
+DONOR_SHORT = ("The song sung in the new style is {:.1f} seconds long and stops before the bars it "
+               "was sung for end.")
+
 
 @dataclasses.dataclass(frozen=True)
 class Edit:
@@ -195,6 +269,13 @@ class Edit:
     the score (quarter notes) from the downbeat of ``to``, negative before it;
     None for where a retake of the section would open (``grid.opening``) and
     for anything that is not a break.
+
+    ``style``, ``melody``, ``octave`` and ``also`` belong to a restyle: the
+    style its bars are sung in, whether they keep the song's notes ("same")
+    or the model writes them ("new"), how many octaves the voice moves, and
+    the other ``(first, stop)`` bars sung in it beside ``bars`` -- the other
+    choruses, say, which one song sung in the style gives them all, so one
+    voice sings them. None for anything else.
     """
 
     op: str
@@ -212,6 +293,10 @@ class Edit:
     to: int | None = None
     length: int | None = None
     at: int | None = None
+    style: str | None = None
+    melody: str | None = None
+    octave: int | None = None
+    also: tuple | None = None
 
     def seeds(self) -> tuple:
         """The seed of every take this edit asks for, counted on from its own."""
@@ -259,6 +344,16 @@ class Step:
     (``notation.interlude_head``), ``bars`` the bars the break becomes in
     the score after it, and ``seam`` where it opens in units of L, which the
     notes sung after it are moved from (``notation.interluded``).
+
+    A restyle takes in hand from where the bar before its first stretch is
+    sung again to where its last stretch ends; ``stretches`` are its
+    ``(first, stop)`` bars in order, and ``score`` is what the song sung in
+    the new style starts from: the song's own score, or the bars before the
+    first stretch with its section begun after them (``notation.section_head``)
+    for a melody the model writes. ``blocks`` then holds, for each stretch,
+    the first and the last lyrics section it sings, counted among those with
+    lines, which is how the bars standing for it are found in what was
+    written; it is empty when the song's own notes are sung.
     """
 
     kind: str
@@ -276,6 +371,7 @@ class Step:
     sung: tuple = ()
     pulse: float | None = None
     seam: int | None = None
+    blocks: tuple = ()
 
 
 VARY = (0.0, 5.0)
@@ -337,6 +433,8 @@ def _range(item, index: int, op: str = "retake"):
         return None, None
     if op == "move" and (bars is None or seconds is not None):
         raise ValueError(MOVE_WHERE.format(where))
+    if op == "restyle" and (bars is None or seconds is not None):
+        raise ValueError(RESTYLE_WHERE.format(where))
     if op in ("words", "notes") and bars is None and seconds is None:
         return None, None
     if op == "notes" and seconds is not None:
@@ -455,6 +553,50 @@ def _breaking(item, where: str) -> tuple:
     return to, length, at
 
 
+def _restyling(item, where: str, bars: tuple) -> tuple:
+    """The style a restyle sings in, its melody, its octave and the other bars it sings, checked.
+
+    Whether the bars are bars of the song, and whole sections where the
+    model writes the melody, is ``_restyle``'s business, which reads them
+    against the song's score.
+    """
+    style = item.get("style")
+    if not isinstance(style, str) or not style.strip():
+        raise ValueError(NO_STYLE.format(where))
+    style = style.strip()
+    if len(style) > STYLE_LONGEST:
+        raise ValueError("{} gives a style of {} characters, and it may have {}.".format(
+            where, len(style), STYLE_LONGEST))
+    melody = item.get("melody")
+    melody = "same" if melody is None else melody
+    if melody not in MELODIES:
+        raise ValueError("{} asks for the melody '{}'; it is 'same' or 'new'.".format(where, melody))
+    octave = item.get("octave")
+    octave = 0 if octave is None else _whole(octave, "{}: the octave".format(where))
+    if octave not in OCTAVES:
+        raise ValueError("{} moves the voice {} octaves, and it moves it -1, 0 or 1.".format(
+            where, octave))
+    also = item.get("also")
+    also = [] if also is None else also
+    if not isinstance(also, (list, tuple)):
+        raise ValueError("{} sings more bars in the style, and they are not a list.".format(where))
+    found = []
+    for pair in also:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError("{} sings more bars in the style that are not a pair.".format(where))
+        first = _whole(pair[0], "{}: the first bar".format(where))
+        stop = _whole(pair[1], "{}: the last bar".format(where))
+        if not 0 <= first < stop:
+            raise ValueError("{} sings bars {} to {} in the style, which is not a stretch of a "
+                             "score.".format(where, first + 1, stop))
+        found.append((first, stop))
+    ordered = sorted([tuple(bars)] + found)
+    for (first, stop), (later, end) in zip(ordered, ordered[1:]):
+        if later < stop:
+            raise ValueError(RESTYLE_APART.format(where, first + 1, stop, later + 1, end))
+    return style, melody, octave, tuple(found)
+
+
 def _edit(item, index: int, takes: int) -> Edit:
     where = "Edit {}".format(index + 1)
     if not isinstance(item, dict):
@@ -462,7 +604,8 @@ def _edit(item, index: int, takes: int) -> Edit:
     op = item.get("op")
     if op not in OPS:
         raise ValueError("{} asks for '{}', which is not something an edit does. It is 'retake', "
-                         "'cut', 'words', 'notes', 'extend', 'move' or 'break'.".format(where, op))
+                         "'cut', 'words', 'notes', 'extend', 'move', 'break' or 'restyle'.".format(
+                             where, op))
     bars, seconds = _range(item, index, op)
     if op == "cut":
         return Edit(op=op, bars=bars, seconds=seconds, seed=0, takes=1, take=None,
@@ -489,6 +632,7 @@ def _edit(item, index: int, takes: int) -> Edit:
         if not 0 <= take < wanted:
             raise ValueError("{} keeps take {} of {}.".format(where, take + 1, wanted))
     lines, words, score, to, length, at = None, None, None, None, None, None
+    style, melody, octave, also = None, None, None, None
     if op == "words":
         lines, words = _rewrite(item, where)
     if op == "notes":
@@ -497,10 +641,13 @@ def _edit(item, index: int, takes: int) -> Edit:
         words = _going(item, where)
     if op == "break":
         to, length, at = _breaking(item, where)
+    if op == "restyle":
+        style, melody, octave, also = _restyling(item, where, bars)
     return Edit(op=op, bars=bars, seconds=seconds, seed=seed, takes=wanted, take=take,
                 vary=_measure(item, "vary", where, "the variety", VARY),
                 guide=_measure(item, "guide", where, "the guide", GUIDE),
-                lines=lines, text=words, score=score, to=to, length=length, at=at)
+                lines=lines, text=words, score=score, to=to, length=length, at=at,
+                style=style, melody=melody, octave=octave, also=also)
 
 
 def read(text, takes: int = 1) -> tuple:
@@ -584,7 +731,9 @@ def written(edits) -> str:
             item["length"] = edit.length
             if edit.at is not None:
                 item["at"] = edit.at
-        if edit.op in ("retake", "words", "notes", "extend", "break"):
+        if edit.op == "restyle":
+            item.update(_restyled_fields(edit))
+        if edit.op in ("retake", "words", "notes", "extend", "break", "restyle"):
             item["seed"] = edit.seed
             item["takes"] = edit.takes
             if edit.take is not None:
@@ -597,6 +746,14 @@ def written(edits) -> str:
             item["fade"] = edit.fade
         items.append(item)
     return json.dumps(items)
+
+
+def _restyled_fields(edit: Edit) -> dict:
+    """What a restyle carries besides its bars, as the list writes it: ``also`` only when there is any."""
+    fields = {"style": edit.style, "melody": edit.melody, "octave": edit.octave}
+    if edit.also:
+        fields["also"] = [[first, stop] for first, stop in edit.also]
+    return fields
 
 
 def opened(song, clock, sheet=None) -> State:
@@ -967,6 +1124,196 @@ def break_frames(state: State, step: Step, sheet) -> int:
     return max(1, state.clock.frames(starts[stop] - starts[first]))
 
 
+def _restyle(state: State, edit: Edit) -> Step:
+    """A restyle worked out: its stretches, what the song sung in the new style starts from, and the frames in hand.
+
+    The song's own notes are sung as they are, so any bars will do. A
+    melody the model writes is written for the words of whole sections:
+    each stretch starts and ends where sections do, and with sections that
+    sing, which is how its bars are found again in what the model wrote
+    (``restyle_spans``), and before the place where the score's sections
+    part from the order of the words, past which that cannot be told
+    (``ops.sung_sections``); the model writes on from the bars before the
+    first stretch, without the phrase sung across into it, which it writes
+    itself.
+    """
+    if state.sheet is None or state.clock is None:
+        raise ValueError(NO_RESTYLE)
+    sheet, clock = state.sheet, state.clock
+    count = len(sheet["bars"])
+    stretches = tuple(sorted((tuple(edit.bars),) + tuple(edit.also or ())))
+    for first, stop in stretches:
+        grid.bars_of(sheet, first, stop)
+    marks = grid.seams(sheet)
+    beat, margin = grid._beat_and_margin(sheet, clock)
+    first = stretches[0][0]
+    head, blocks = state.score, ()
+    if edit.melody == "new":
+        named = {section["bar"]: section for section in sheet["sections"]}
+        for bar in sorted({bar for stretch in stretches for bar in stretch}):
+            if bar != count and bar not in named:
+                inside = next(section["name"] for section in sheet["sections"]
+                              if section["bar"] < bar < section["bar"] + section["bars"])
+                raise ValueError(NEW_SECTIONS.format(bar + 1, inside))
+        if first == 0:
+            raise ValueError(NEW_FIRST)
+        paired = ops.sung_sections(state.lyrics, state.score)
+        told = [index for index in paired if index is not None]
+        if not told:
+            raise ValueError(NEW_UNMATCHED)
+        found = []
+        for low, high in stretches:
+            inside = [index for index, section in enumerate(sheet["sections"])
+                      if low <= section["bar"] < high]
+            for index in (inside[0], inside[-1]):
+                if index > told[-1] and len(told) < len(paired):
+                    parted = sheet["sections"][told[-1] + 1]
+                    raise ValueError(NEW_UNTOLD.format(parted["name"], parted["bar"] + 1))
+                if index not in paired:
+                    section = sheet["sections"][index]
+                    raise ValueError(NEW_UNSUNG.format(section["name"], section["bar"] + 1))
+            sung = [block for block, index in enumerate(paired) if index in inside]
+            found.append((sung[0], sung[-1]))
+        blocks = tuple(found)
+        seam = grid.starts_of(sheet)[first] - max(0.0, marks[first].pickup)
+        head = notation.section_head(state.score, first, int(round(seam)), named[first]["name"])
+    start, _end = grid.retake_frames(sheet, clock, marks, first, stretches[0][1], state.frames)
+    if first > 0:
+        opens = clock.moment(first - 1, grid.opening(marks[first - 1], beat, margin))
+        start = max(0, min(opens, start - SUNG_LEAST))
+    _begin, stop = grid.retake_frames(sheet, clock, marks, stretches[-1][0], stretches[-1][1],
+                                      state.frames)
+    pulse = clock.rate * clock.tick * float(sheet["per_quarter"]) / 2
+    return Step(kind="restyle", start=start, stop=stop, bars=(first, stretches[-1][1]),
+                lyrics=state.lyrics, score=head, dropped=(), notices=(), stretches=stretches,
+                pulse=pulse, blocks=blocks)
+
+
+def restyle_spans(state: State, step: Step, text: str) -> tuple:
+    """``(first, stop)`` bars of ``text``, the score a song in the new style was sung from, for each stretch of a restyle.
+
+    Sung from the song's own notes, they are the stretches themselves. In a
+    melody the model wrote, each is found by the words: from the section the
+    first lyrics section of the stretch is sung in to the end of the one its
+    last is sung in (``ops.sung_sections``). A ValueError says when that
+    cannot be done -- the model wrote sections the words cannot be matched
+    with, or put them out of the song's order -- and the take writes again.
+    """
+    sheet = notation.read(text)
+    count = len(sheet["bars"])
+    if not step.blocks:
+        if count != len(state.sheet["bars"]):
+            raise ValueError("the score sung in the new style has {} bars where the song has "
+                             "{}".format(count, len(state.sheet["bars"])))
+        return tuple(step.stretches)
+    paired = ops.sung_sections(state.lyrics, text)
+    sections = sheet["sections"]
+    found = []
+    last = step.stretches[0][0]
+    for low, high in step.blocks:
+        if high >= len(paired) or paired[high] is None:
+            raise ValueError(WRITTEN_UNMATCHED)
+        opening, closing = sections[paired[low]], sections[paired[high]]
+        span = (opening["bar"], closing["bar"] + closing["bars"])
+        if span[0] < last or not span[0] < span[1]:
+            raise ValueError(WRITTEN_ORDER)
+        found.append(span)
+        last = span[1]
+    return tuple(found)
+
+
+def restyle_reach(state: State, step: Step, sheet, spans) -> tuple:
+    """``(bars, seconds)``: how far the song in the new style is sung, under ``sheet``, its score read.
+
+    ``RESTYLE_PAST`` bars past the last of ``spans`` and ``RESTYLE_TAIL``
+    seconds more, at the song's own tempo; seconds None, and every bar, when
+    a stretch reaches the end of either song, which is then sung whole.
+    """
+    count = len(sheet["bars"])
+    if step.stretches[-1][1] >= len(state.sheet["bars"]) or spans[-1][1] >= count:
+        return count, None
+    clock = state.clock
+    bars = min(count, spans[-1][1] + RESTYLE_PAST)
+    seconds = clock.offset + clock.rate * grid.tick_seconds(sheet) * grid.starts_of(sheet)[bars]
+    return bars, seconds + RESTYLE_TAIL
+
+
+@dataclasses.dataclass(frozen=True)
+class Laid:
+    """How a restyle lays the song and the song sung in the new style one after another.
+
+    ``pieces`` are ``(source, start, stop)`` frames, source 0 the song and 1
+    the other, and ``stretches`` the ``(source, low, high)`` bars each holds,
+    in the order of the score they make. ``sung`` is ``(start, seam)`` for
+    every seam, the stretch before it that is sung again, in the frames the
+    pieces lay, and ``owners`` the source after each, whose prompt it is sung
+    under. ``lines`` is the second of every bar line of the other song.
+    """
+
+    pieces: tuple
+    stretches: tuple
+    sung: tuple
+    owners: tuple
+    lines: tuple
+
+
+def restyle_layout(state: State, step: Step, sheet, clock, frames: int, spans) -> Laid:
+    """The song and the one sung in the new style laid together: ``sheet`` and ``clock`` are its score read and its grid, ``frames`` its length.
+
+    Each seam is cut at one shift before the bar lines it joins in both
+    songs (``grid.shared_shift``), as every seam of a move is, so the beat
+    goes on across it; the last bar before it is sung again (``SUNG_LEAST``),
+    from where a retake of that bar would open, under the prompt of the song
+    that comes after it -- measured on 2026-10-21, those seams kept the beat
+    within 26 ms on five songs of seven and the owner of the pack heard none.
+    """
+    own = state.sheet
+    count = len(own["bars"])
+    marks, other = grid.seams(own), grid.seams(sheet)
+    beat, margin = grid._beat_and_margin(own, state.clock)
+    pieces, stretches = [], []
+    at, bar = 0, 0
+    for (first, stop), (opening, closing) in zip(step.stretches, spans):
+        start, begin = 0, 0
+        if first > 0:
+            enter = grid.shared_shift([marks[first], other[opening]], beat, margin)
+            start, begin = state.clock.moment(first, enter), clock.moment(opening, enter)
+        end, finish = state.frames, frames
+        if stop < count:
+            leave = grid.shared_shift([marks[stop], other[closing]], beat, margin)
+            end, finish = state.clock.moment(stop, leave), clock.moment(closing, leave)
+        start, end = max(at, start), min(state.frames, end)
+        if not start < end:
+            raise ValueError(grid.OUTSIDE.format(first + 1, stop))
+        if not 0 <= begin < finish <= frames:
+            raise ValueError(DONOR_SHORT.format(frames * FRAME_SECONDS))
+        pieces += [(0, at, start), (1, begin, finish)]
+        stretches += [(0, bar, first), (1, opening, closing)]
+        at, bar = end, stop
+    pieces.append((0, at, state.frames))
+    stretches.append((0, bar, count))
+    kept = [(piece, stretch) for piece, stretch in zip(pieces, stretches)
+            if piece[2] > piece[1] or stretch[2] > stretch[1]]
+    clocks, seams = (state.clock, clock), (marks, other)
+    sounding = [(piece, stretch) for piece, stretch in kept if piece[2] > piece[1]]
+    sung, owners = [], []
+    laid, last = 0, 0
+    for index, ((which, start, stop), (_source, low, high)) in enumerate(sounding[:-1]):
+        seam = laid + stop - start
+        opens = laid
+        if high > low:
+            opens = laid + clocks[which].moment(
+                high - 1, grid.opening(seams[which][high - 1], beat, margin)) - start
+        opens = max(last, min(opens, seam - SUNG_LEAST))
+        if opens < seam:
+            sung.append((opens, seam))
+            owners.append(sounding[index + 1][0][0])
+        laid = last = seam
+    return Laid(pieces=tuple(piece for piece, _stretch in kept),
+                stretches=tuple(stretch for _piece, stretch in kept), sung=tuple(sung),
+                owners=tuple(owners), lines=tuple(clock.bar_seconds()))
+
+
 def placed(step: Step, sung=()) -> tuple:
     """The frames the bars a move took now lie at, in the song after it.
 
@@ -1016,6 +1363,8 @@ def plan(state: State, edit: Edit, span=None, level=None) -> Step:
         return _move(state, edit, level)
     if edit.op == "break":
         return _break(state, edit)
+    if edit.op == "restyle":
+        return _restyle(state, edit)
     start, stop = _frames(state, edit, span)
     if edit.op == "words":
         rewrite = ops.change_words(state.lyrics, edit.lines[0], edit.lines[1], edit.text)
@@ -1053,7 +1402,8 @@ def plan(state: State, edit: Edit, span=None, level=None) -> Step:
                 score=score, dropped=words.dropped, notices=tuple(notices))
 
 
-def after(state: State, step: Step, count: int, score: str | None = None, sung=()) -> State:
+def after(state: State, step: Step, count: int, score: str | None = None, sung=(),
+          laid=None) -> State:
     """The song an edit leaves, once its new part has come out ``count`` frames long.
 
     A cut is ``count`` 0. The bars of the score move with the sound: a cut
@@ -1066,8 +1416,19 @@ def after(state: State, step: Step, count: int, score: str | None = None, sung=(
     before a seam that was sung again, ``core.Take.sung``, is a retake of
     its own. A break has the score its take wrote too, ``score``: its bars go
     in before the section it was put before, and everything after moves by
-    ``count``.
+    ``count``. A restyle has the score its take made, ``score``, and its bars
+    lie as ``laid``, the take's ``Laid``, put them, then as ``sung`` left
+    them, as a move's do.
     """
+    if step.kind == "restyle":
+        sheet = notation.read(score)
+        clock = grid.after_restyle(state.clock, laid.lines, grid.starts_of(sheet), laid.stretches,
+                                   laid.pieces)
+        frames = sum(stop - start for _which, start, stop in laid.pieces)
+        for start, stop, made in sung:
+            clock = grid.after_retake(clock, start, stop, made)
+            frames += made - (stop - start)
+        return State(lyrics=step.lyrics, score=score, sheet=sheet, clock=clock, frames=frames)
     frames = state.frames - (step.stop - step.start) + count
     if step.kind == "move":
         sheet = notation.read(step.score)
@@ -1121,6 +1482,8 @@ def _spelled(edit: Edit, seed) -> dict:
         item["length"] = edit.length
         if edit.at is not None:
             item["at"] = edit.at
+    if edit.op == "restyle":
+        item.update(_restyled_fields(edit))
     for key, value in (("vary", edit.vary), ("guide", edit.guide)):
         if value is not None:
             item[key] = value

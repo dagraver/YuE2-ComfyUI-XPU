@@ -90,8 +90,8 @@ switch on the song nodes, `vocals_only` in `YuE2 Options`:
 See [YuE2 Vocals Only](#yue2-vocals-only).
 
 A sixth node changes part of a song the pack has sung and keeps the rest of it:
-a stretch sung again, cut out, given new words or notes, or moved, and the song
-carried on past its end or given an instrumental break:
+a stretch sung again, cut out, given new words or notes, sung in another style
+or moved, and the song carried on past its end or given an instrumental break:
 
     [YuE2 Generate Song] -> [YuE2 Edit Track] -> [Save Audio]
                               Edit track...  (the song as a track)
@@ -1166,8 +1166,9 @@ Template 9, *An a cappella song*, is the switch set up with such a style.
 ### YuE2 Edit Track
 
 Part of a finished song changed, and the rest of it kept. A stretch is sung
-again, cut out, given new words or new notes, or moved to another place; the
-song goes on past its end, or takes an instrumental break. The node hands back
+again, cut out, given new words or new notes, sung in another style, or moved
+to another place; the song goes on past its end, or takes an instrumental
+break. The node hands back
 the whole song, and everything outside the edits is the old recording to the
 sample. Upstream YuE2 has no local editing, and neither ComfyUI core nor any
 other YuE2 pack has it either.
@@ -1200,8 +1201,8 @@ untick it, and the node goes on with the song it was editing, or one opened with
   one opened with `Saved songs...` since, and the node wired in is not run for
   it, so a song sung before a restart is not sung again to edit one bar of it.
   Opening a song with `Saved songs...` unticks the square.
-- `takes` -- how many takes a retake, new words, new notes or a song that goes
-  on sings, to choose between by ear. Two by default. A cut and a move have one
+- `takes` -- how many takes a retake, new words, new notes, another style or a
+  song that goes on sings, to choose between by ear. Two by default. A cut and a move have one
   result each.
 - `options` -- only what the run decides is read from it: `device`, `offload`,
   `low_vram`, `vae`, `quantization`, `attention_backend`, `download` and
@@ -1318,10 +1319,44 @@ same rule the node uses.*
   the voice, and the take with the least voice in them is kept. Over four
   songs 7 breaks of 12 came out free of the voice, and a rap was sung over
   every time, so the node says when a voice is left.
+- **Style...** sings the selected bars in another style -- other instruments,
+  another singer, another manner of singing -- with the same words. A panel
+  opens in the words column with the style, filled in with the song's own to
+  be changed, and written as on the song node. A retake cannot take another
+  style: the model sings on in the style it hears itself singing, and a retake
+  told a new style kept the old one. So every take sings the song again in the
+  new style, from its start to a little past the selection, and its bars are
+  laid into the song with the bar before each seam sung again, as a move does.
+  A take costs about as long as singing the song that far.
+  - `Same notes` keeps the song's tune and takes any bars. `New melody` has
+    the model write a tune for the new style, on from the bars before the
+    selection -- a rapper's recitative, say -- and takes whole sections that
+    are sung, the first excepted.
+  - A voice sits where the notes are, whatever the style says: "male vocal" in
+    the style left a woman's song in her register in 6 songs of 6, and the
+    notes moved an octave toward the new voice moved it in all 6. For a man in
+    a woman's song choose `An octave down`, and `An octave up` the other way
+    round.
+  - When other sections have the selected one's name, `and the other choruses,
+    in the same voice` sings them too, from the same take: one singer for all
+    of them, at the price of one take.
+  - With Qwen3-ASR already on the machine the take that sings the most of the
+    words is kept, and otherwise the first.
+
+  Measured on the second verse of three songs, English and Russian: the
+  stretch sounded as much like the new style as two songs sung in it from the
+  start sound like each other, the words were sung as well as in a retake, 87
+  to 91 in 100 against 90, and the beat after the seams was 0 to 26 ms off; no
+  seam was heard. A new melody finds the words of its sections by pairing the
+  tags of the lyrics with the sections of the score by name, from the start.
+  Where the model sang its sections in another order than the lyrics give
+  them, the sections from that place on are refused, and the refusal names the
+  bar; the tick takes every section of the name, so there untick it, or keep
+  the notes.
 
 A song sung with `cot` at `off` has no score and so no bars. It is selected and
-edited by seconds, and the edits that need a score -- notes, going on, a move
-and a break -- say so.
+edited by seconds, and the edits that need a score -- notes, going on, a move,
+a break and another style -- say so.
 
 #### Saved songs
 
@@ -1365,7 +1400,8 @@ decode away.*
   bars on the sound the first time a song is opened: the chroma of the mix
   alone put a rock song's bars 14 seconds off where the model had sung its
   intro nine bars short, and the voice placed all seven songs tried. Without
-  it the bars come from the chroma alone, and the node says so.
+  it the bars come from the chroma alone, and the node says so. It also finds
+  the bars of every song a take of another style sings.
 - **Qwen3-ForcedAligner-0.6B** (1.84 GB) finds where each line is sung. It is
   downloaded with the first change of words; with it on the machine, the lines
   light up by their real times. It hears the song a section at a time, on the
@@ -1377,15 +1413,18 @@ decode away.*
   them, against 1731. A song with no score, or with lyrics that cannot be
   paired with its score's sections, is heard in one pass.
 - **Qwen3-ASR-1.7B** (3.8 GB) hears the takes. New words and a song that goes
-  on with new lines always use it, and fetch it; a retake or new notes use it
-  only when it is already there.
+  on with new lines always use it, and fetch it; a retake, new notes or another
+  style use it only when it is already there.
 
 The listening models are unloaded after the run unless `keep_model_loaded` is
 on, and Unload Models releases them, the takes of the session included.
 
 **Measured** through the node on an RTX 5090, on a four-minute song: a retake of
 a few bars in about 10 seconds, a cut in 7, a move in 19, a new ending in 11,
-against about a hundred seconds to sing the song again. On a three-minute song
+against about a hundred seconds to sing the song again. Another style costs a
+song sung again as far as the selection, 31 to 49 seconds for the whole of a
+song of two to two and a half minutes, and 13 to 16 more for the seams: two takes of both choruses
+of a ballad rapped to a new melody took 199 seconds. On a three-minute song
 with `offload` at `auto`, `on` and `on` with `low_vram`, a retake reserved
 10.93, 5.15 and 3.09 GiB of the card, where singing the song had reserved
 10.98, 5.46 and 3.48. Outside the edit the audio is the old file's own samples.
