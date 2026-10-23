@@ -4,7 +4,13 @@ export const MAX_TAKES = 4;
 
 export const SEED_CEILING = 2147483648;
 
-export const OPS = ["retake", "cut", "words", "notes", "extend", "move", "break"];
+export const OPS = ["retake", "cut", "words", "notes", "extend", "move", "break", "restyle"];
+
+export const MELODIES = ["same", "new"];
+
+export const OCTAVES = [-1, 0, 1];
+
+export const STYLE_LONGEST = 1000;
 
 export const BREAK_BARS = [1, 16];
 
@@ -28,6 +34,9 @@ export const SECONDS_CUT =
 export const PAST_THE_END = "The song stops before that, so there is nothing there to edit.";
 
 const PY_SPACE = /^[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
+
+const PY_EDGES = new RegExp("^" + PY_SPACE.source.slice(1, -2) + "+|" + PY_SPACE.source.slice(1, -2)
+    + "+$", "gu");
 
 function whole(value) {
     return typeof value === "number" && Number.isInteger(value);
@@ -88,6 +97,10 @@ function rangeOf(item, where, op) {
         throw new Error(where + " moves sections, which go by bars: it selects bars, and 'to' "
             + "names the bar line they go to.");
     }
+    if (op === "restyle" && (bars === null || seconds !== null)) {
+        throw new Error(where + " sings bars in another style, which go by the score: it selects "
+            + "bars, not seconds.");
+    }
     if ((op === "words" || op === "notes") && bars === null && seconds === null) {
         return { bars: null, seconds: null };
     }
@@ -126,6 +139,56 @@ function rangeOf(item, where, op) {
     return { bars: null, seconds: [chosen[0], chosen[1]] };
 }
 
+function restyling(item, where, bars) {
+    let style = given(item, "style");
+    if (typeof style !== "string" || PY_SPACE.test(style)) {
+        throw new Error(where + " gives no style to sing in.");
+    }
+    style = style.replace(PY_EDGES, "");
+    const length = [...style].length;
+    if (length > STYLE_LONGEST) {
+        throw new Error(where + " gives a style of " + length + " characters, and it may have "
+            + STYLE_LONGEST + ".");
+    }
+    const melody = given(item, "melody") === null ? "same" : given(item, "melody");
+    if (!MELODIES.includes(melody)) {
+        throw new Error(where + " asks for the melody '" + melody + "'; it is 'same' or 'new'.");
+    }
+    const octave = given(item, "octave") === null ? 0 : given(item, "octave");
+    if (!whole(octave)) throw new Error(where + ": the octave is not a whole number.");
+    if (!OCTAVES.includes(octave)) {
+        throw new Error(where + " moves the voice " + octave + " octaves, and it moves it -1, 0 "
+            + "or 1.");
+    }
+    const listed = given(item, "also") === null ? [] : given(item, "also");
+    if (!Array.isArray(listed)) {
+        throw new Error(where + " sings more bars in the style, and they are not a list.");
+    }
+    const also = [];
+    for (const stretch of listed) {
+        if (!pair(stretch)) {
+            throw new Error(where + " sings more bars in the style that are not a pair.");
+        }
+        if (!whole(stretch[0])) throw new Error(where + ": the first bar is not a whole number.");
+        if (!whole(stretch[1])) throw new Error(where + ": the last bar is not a whole number.");
+        if (!(stretch[0] >= 0 && stretch[0] < stretch[1])) {
+            throw new Error(where + " sings bars " + (stretch[0] + 1) + " to " + stretch[1]
+                + " in the style, which is not a stretch of a score.");
+        }
+        also.push([stretch[0], stretch[1]]);
+    }
+    const ordered = [bars].concat(also).sort((one, two) => one[0] - two[0] || one[1] - two[1]);
+    for (let at = 1; at < ordered.length; at += 1) {
+        if (ordered[at][0] < ordered[at - 1][1]) {
+            throw new Error(where + " sings bars " + (ordered[at - 1][0] + 1) + " to "
+                + ordered[at - 1][1] + " and bars " + (ordered[at][0] + 1) + " to "
+                + ordered[at][1] + " in another style, and those overlap. Each stretch is sung "
+                + "once.");
+        }
+    }
+    return { style, melody, octave, also };
+}
+
 function editOf(item, index, takes) {
     const where = "Edit " + (index + 1);
     if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -134,7 +197,7 @@ function editOf(item, index, takes) {
     const op = given(item, "op");
     if (!OPS.includes(op)) {
         throw new Error(where + " asks for '" + op + "', which is not something an edit does. It "
-            + "is 'retake', 'cut', 'words', 'notes', 'extend', 'move' or 'break'.");
+            + "is 'retake', 'cut', 'words', 'notes', 'extend', 'move', 'break' or 'restyle'.");
     }
     const span = rangeOf(item, where, op);
     if (op === "cut") {
@@ -244,37 +307,51 @@ function editOf(item, index, takes) {
             throw new Error(where + ": the beat the break goes in at is not a whole number.");
         }
     }
-    return { op, bars: span.bars, seconds: span.seconds, seed, takes: wanted, take,
-             vary: measure(item, "vary", where, "the variety", VARY),
-             guide: measure(item, "guide", where, "the guide", GUIDE), fade: null,
-             lines, text: said, score, to, length, at };
+    const edit = { op, bars: span.bars, seconds: span.seconds, seed, takes: wanted, take,
+                   vary: measure(item, "vary", where, "the variety", VARY),
+                   guide: measure(item, "guide", where, "the guide", GUIDE), fade: null,
+                   lines, text: said, score, to, length, at };
+    return op === "restyle" ? { ...edit, ...restyling(item, where, span.bars) } : edit;
 }
 
 export function readEdits(text, takes = 1) {
-    if (text === null || text === undefined) return { edits: [], error: "" };
-    if (typeof text !== "string") return { edits: [], error: NOT_A_LIST };
+    if (text === null || text === undefined) return { edits: [], error: "", song: "" };
+    if (typeof text !== "string") return { edits: [], error: NOT_A_LIST, song: "" };
     const body = text.trim();
-    if (!body) return { edits: [], error: "" };
+    if (!body) return { edits: [], error: "", song: "" };
     let found = null;
     try {
         found = JSON.parse(body);
     } catch (error) {
-        return { edits: [], error: NOT_A_LIST };
+        return { edits: [], error: NOT_A_LIST, song: "" };
     }
-    if (!Array.isArray(found)) return { edits: [], error: NOT_A_LIST };
+    let song = "";
+    if (found && typeof found === "object" && !Array.isArray(found)) {
+        if (found.song !== undefined && typeof found.song !== "string") {
+            return { edits: [], error: NOT_A_LIST, song: "" };
+        }
+        song = (found.song || "").trim();
+        found = found.edits;
+    }
+    if (!Array.isArray(found)) return { edits: [], error: NOT_A_LIST, song: "" };
     const edits = [];
     for (let index = 0; index < found.length; index += 1) {
         try {
             edits.push(editOf(found[index], index, takes));
         } catch (error) {
-            return { edits: [], error: error.message };
+            return { edits: [], error: error.message, song };
         }
     }
-    return { edits, error: "" };
+    return { edits, error: "", song };
 }
 
-export function writeEdits(edits) {
-    return JSON.stringify((edits || []).map((edit) => {
+export function writeEdits(edits, song = "") {
+    const items = editItems(edits);
+    return song ? JSON.stringify({ song, edits: items }) : JSON.stringify(items);
+}
+
+function editItems(edits) {
+    return (edits || []).map((edit) => {
         const item = { op: edit.op };
         if (edit.bars) item.bars = [edit.bars[0], edit.bars[1]];
         else if (edit.seconds) item.seconds = [edit.seconds[0], edit.seconds[1]];
@@ -290,8 +367,14 @@ export function writeEdits(edits) {
             item.length = edit.length;
             if (whole(edit.at)) item.at = edit.at;
         }
+        if (edit.op === "restyle") {
+            item.style = edit.style;
+            item.melody = edit.melody;
+            item.octave = edit.octave;
+            if (edit.also && edit.also.length) item.also = edit.also.map((one) => [one[0], one[1]]);
+        }
         if (edit.op === "retake" || edit.op === "words" || edit.op === "notes"
-            || edit.op === "extend" || edit.op === "break") {
+            || edit.op === "extend" || edit.op === "break" || edit.op === "restyle") {
             item.seed = edit.seed;
             item.takes = edit.takes;
             if (edit.take !== null && edit.take !== undefined) item.take = edit.take;
@@ -301,7 +384,7 @@ export function writeEdits(edits) {
             item.fade = edit.fade;
         }
         return item;
-    }));
+    });
 }
 
 export function newSeed() {
@@ -421,23 +504,40 @@ function goingOn(edit) {
         + (more ? " and " + more + (more === 1 ? " more line" : " more lines") : "");
 }
 
+export function restyledBars(edit) {
+    return [edit.bars].concat(edit.also || []).sort((one, two) => one[0] - two[0])
+        .map((one) => barsText(one[0], one[1])).join(" and ");
+}
+
+export function restyleTitle(edit) {
+    const said = [...String(edit.style || "")];
+    const short = said.length > 40 ? said.slice(0, 39).join("") + "\u2026" : said.join("");
+    return "\"" + short + "\"";
+}
+
 export function describeEdit(edit, index, count = 0) {
     const named = { cut: "Cut", words: "New words", retake: "Retake", notes: "New notes",
                     move: "Move" };
     const what = edit.op === "extend" ? goingOn(edit)
         : edit.op === "break" ? "A break of " + edit.length + (edit.length === 1 ? " bar" : " bars")
+        : edit.op === "restyle" ? "Style " + restyleTitle(edit)
         : named[edit.op] || "Retake";
     let where = "";
     if (edit.op === "move") {
         where = barsText(edit.bars[0], edit.bars[1]) + (count && edit.to >= count ? " to the end"
             : " before bar " + (edit.to + 1));
     } else if (edit.op === "break") where = "before bar " + (edit.to + 1) + beatsFrom(edit.at);
+    else if (edit.op === "restyle") {
+        where = restyledBars(edit) + (edit.melody === "new" ? ", a new melody" : "")
+            + (edit.octave ? (edit.octave < 0 ? ", an octave down" : ", an octave up") : "");
+    }
     else if (edit.bars) where = barsText(edit.bars[0], edit.bars[1]);
     else if (edit.seconds) where = spanText(edit.seconds[0], edit.seconds[1]);
     else if (edit.lines) where = linesText(edit.lines[0], edit.lines[1]);
     else if (edit.op !== "extend") where = "the bars they change";
     const joiner = edit.op === "extend" ? "" : edit.op === "words" ? " for "
-        : edit.op === "notes" ? " in " : edit.op === "move" || edit.op === "break" ? " " : " of ";
+        : edit.op === "notes" || edit.op === "restyle" ? " in "
+        : edit.op === "move" || edit.op === "break" ? " " : " of ";
     const kept = !ONE_TAKE.includes(edit.op) && edit.take !== null && edit.take !== undefined
         ? ", take " + (edit.take + 1) + " of " + edit.takes : "";
     const extra = [];
@@ -568,6 +668,70 @@ export function breakFor(to, length, takes, seed, knobs = {}, at = null) {
 export function breakLines(grid) {
     const count = barCount(grid);
     return sectionLines(grid).filter((bar) => bar > 0 && bar < count);
+}
+
+function breakSides(grid, to) {
+    const sections = grid && Array.isArray(grid.sections) ? grid.sections : [];
+    const ahead = sections.filter((section) => section.bar < to)
+        .sort((one, two) => two.bar - one.bar)[0];
+    const next = sections.find((section) => section.bar === to);
+    return [ahead ? ahead.name : "bar " + to, next ? next.name : "bar " + (to + 1)];
+}
+
+export function breakBetween(grid, to) {
+    const [ahead, next] = breakSides(grid, to);
+    return "after the " + ahead + ", before the " + next;
+}
+
+export function breakPair(grid, to) {
+    const [ahead, next] = breakSides(grid, to);
+    return ahead + " \u2192 " + next;
+}
+
+export function breakLineFor(grid, selection) {
+    const lines = breakLines(grid);
+    if (!lines.length) return null;
+    if (selection) {
+        const bars = selection.first !== null && selection.first !== undefined;
+        if (bars && lines.includes(selection.stop)) return selection.stop;
+        const seconds = lines.map((bar) => lineAt(grid, bar));
+        return lines[nearestIn(seconds, bars ? lineAt(grid, selection.stop) : selection.to)];
+    }
+    const chorus = grid.sections.find((section) => lines.includes(section.bar)
+        && labelOf(section.name) === "chorus");
+    return chorus ? chorus.bar : lines[0];
+}
+
+export function restyleFor(selection, also, style, melody, octave, takes, seed, knobs = {}) {
+    const edit = { op: "restyle", bars: [selection.first, selection.stop], seconds: null, seed,
+                   takes: Math.max(1, Math.min(MAX_TAKES, takes)), take: null,
+                   vary: null, guide: null, fade: null, lines: null, text: null, score: null,
+                   to: null, length: null, at: null,
+                   style: String(style || "").replace(PY_EDGES, ""),
+                   melody: MELODIES.includes(melody) ? melody : "same",
+                   octave: OCTAVES.includes(octave) ? octave : 0,
+                   also: (also || []).map((one) => [one[0], one[1]]) };
+    if (typeof knobs.vary === "number") edit.vary = knobs.vary;
+    if (typeof knobs.guide === "number") edit.guide = knobs.guide;
+    return edit;
+}
+
+export function sectionStretch(grid, selection) {
+    const sections = grid && Array.isArray(grid.sections) ? grid.sections : [];
+    if (!selection || selection.first === null || selection.first === undefined) return null;
+    const inside = sections.filter((section) => section.bar >= selection.first
+        && section.bar + section.bars <= selection.stop);
+    if (inside.length !== 1 || inside[0].bar !== selection.first
+        || inside[0].bar + inside[0].bars !== selection.stop) return null;
+    return inside[0];
+}
+
+export function sameSections(grid, selection) {
+    const chosen = sectionStretch(grid, selection);
+    if (!chosen) return [];
+    const name = sectionName(chosen);
+    return grid.sections.filter((section) => section !== chosen && sectionName(section) === name)
+        .map((section) => [section.bar, section.bar + section.bars]);
 }
 
 export function moveFor(first, stop, to) {

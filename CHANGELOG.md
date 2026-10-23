@@ -7,10 +7,10 @@ the same thing; the release workflow refuses a tag that disagrees with
 `pyproject.toml`, or one that either changelog has no section for. The section it
 finds is published as the release notes, English above Russian.
 
-## 0.13.3 - 2026-10-17
+## 0.14.2 - 2026-10-23
 
-The fork's own changes, on top of upstream 0.13.2. Everything below
-0.13.2 is upstream's.
+The fork's own changes, on top of upstream 0.14.1. Everything below
+0.14.1 is upstream's.
 
 ### Added
 
@@ -58,6 +58,15 @@ The fork's own changes, on top of upstream 0.13.2. Everything below
 - **llama.cpp chooses its own device for an Intel ordinal.** It has no XPU
   backend to name: its Vulkan and SYCL builds spell and order devices differently
   from torch, so `--device CUDA{N}` is no longer invented for one.
+- **The in-process writer asks llama-cpp-python for flash attention.** That
+  binding defaults `flash_attn` to off, so a machine with the wheel ran the
+  writer without it; llama.cpp then padded its V cache to the widest layer and
+  allocated the full-size SWA cache. Measured on an Arc Pro B70 with the 31B:
+  generation 13.17 -> 14.97 tokens a second, prompt processing 326 -> 259, and
+  80 MiB less KV cache at the writer's context.
+- **The READMEs name the wheel an Intel card needs.** A plain
+  `pip install llama-cpp-python` is a CPU build; an Intel card needs the Vulkan
+  wheel, or a hand-built SYCL one, and all three READMEs now say so.
 
 ### Fixed
 
@@ -65,6 +74,118 @@ The fork's own changes, on top of upstream 0.13.2. Everything below
   the driver produce a confusing failure.
 - **The options list and its tooltip no longer fail when torch cannot be
   imported yet,** which is the state ComfyUI reads the node list in.
+
+## 0.14.1 - 2026-10-22
+
+### Fixed
+
+- **`YuE2 Edit Track` sang a long list of edits again on every Render**
+  ([#13](https://github.com/pytraveler/YuE2-ComfyUI/issues/13)). The node
+  keeps the takes it has sung in memory, up to 1 GB, and every take is the
+  whole song: about 90 MB for four minutes. A run goes through its list from
+  the first edit, and once a list's takes passed that gigabyte the node
+  dropped the first edit to make room for the last; the next run sang the
+  first again and dropped the second for it, and so on down the list, so
+  every Render sang every edit and looked like a render of the whole song.
+  On a four-minute song that began around the sixth edit with two takes
+  each, and at the third or fourth with four. An edit on the list is now
+  never dropped to make room. The takes of edits that are no longer on the
+  list go first, then every edit but the last keeps only the take that was
+  kept, and past that the list stays in memory over the gigabyte. On a song
+  of 3:51 with four takes an edit, on an RTX 5090: three edits took 142
+  seconds, a fourth 58, and Render again on all four took 3 seconds and sang
+  nothing. An undo that makes a trimmed edit the last again shows its other
+  takes as `Sing it`. See [The track window](README.md#the-track-window).
+
+## 0.14.0 - 2026-10-22
+
+### Added
+
+- **Part of a song in another style.** `Style...` in the track window of
+  `YuE2 Edit Track` sings the selected bars in another style -- other
+  instruments, another singer, another manner of singing -- with the same
+  words, and leaves the rest of the song as it was to the sample. A panel in
+  the words column holds the style, filled in with the song's own to be
+  changed, and three choices:
+  - `Same notes`, the song's tune, on any bars; or `New melody`, a tune the
+    model writes for the new style over whole sections -- a rapper's
+    recitative, say;
+  - the voice where it is, `An octave down` or `An octave up`, since a voice
+    sits where the notes are whatever the style says: for a man in a woman's
+    song, an octave down;
+  - when the selected section's name comes again, a tick that sings the other
+    choruses too, from the same take, so one singer sings them all.
+
+  Every take sings the song again in the new style as far as the selection
+  and lays its bars in, the bar before each seam sung again as a move does,
+  so a take costs about as long as singing the song that far: two takes of
+  both choruses of a ballad, rapped to a new melody, took 199 seconds on an
+  RTX 5090. With Qwen3-ASR already on the machine the take that sings the most
+  of the words is kept. A new melody finds the words of its sections by their
+  names, so where the model sang its sections in another order than the
+  lyrics give them, the sections from there on are refused, with the bar
+  named. The list writes the edit as `{"op": "restyle", "style": ...,
+  "melody": "same" or "new", "octave": -1, 0 or 1, "also": [...]}`, and
+  `Saved songs...` marks a song made by it as `style`. See
+  [What an edit can do](README.md#what-an-edit-can-do).
+- **Measured before it was built,** on the second verse of three songs,
+  English and Russian, and both choruses of a Russian ballad. A retake told
+  the new style in its prompt kept the old one: an audio tagger put it 0.24
+  of the way from the song to a song sung in the new style, where a plain
+  retake is 0.14, and a stronger text guide made it a lottery. The song sung
+  again in the new style and laid in reached 0.77, which is as close as two
+  songs sung in that style come to each other. Its words were sung 87 to 91
+  times in 100, against 90 for a retake, and the beat after the seams was 0
+  to 26 ms off. "Male vocal" in the style left a woman's song in her register
+  in 6 songs of 6, and the notes moved an octave toward the new voice moved
+  the voice in all 6; to the ear, the singer changed and no seam was heard.
+
+### Changed
+
+- The tooltip of `edits` on `YuE2 Edit Track` describes `restyle`, and
+  `break`, which it had left out.
+
+## 0.13.3 - 2026-10-18
+
+### Fixed
+
+- **Switching `audio` off on `YuE2 Edit Track` opened another song.** The
+  square beside `audio` switches the input off, and the node then edits the
+  song named in its hidden `song_key` field. Only `Saved songs...` wrote that
+  field, so a user who edited a song from `Load Audio`, unticked the square
+  and pressed Render was handed whatever song had been picked there before,
+  with their edits laid on it: in their log a song of 186 seconds was edited,
+  and the next run opened one of 282. Every run on a song joined to `audio`
+  now writes that song into the field, so with the square unticked the node
+  goes on with the song it was editing; a song opened with `Saved songs...`
+  since then still comes first. See [YuE2 Edit Track](README.md#yue2-edit-track).
+- **A list of edits made on one song is no longer laid on another.** The edits
+  are bars, seconds and lines of the song they were made on, and on another
+  song they cut and sang whatever stood in those places, without a word. The
+  track window now writes the list together with the song it was made on, and
+  the node refuses it on any other song. The refusal names both songs by
+  length, the time each was made and the start of its style, and says to
+  press `Reset track` or to join the first song again. A list written by
+  0.13.2 or earlier names no song and is read as before.
+
+### Changed
+
+- **`Saved songs...` opens a song while one is joined to `audio`.** Its button
+  was greyed out then, and the window explained that the square on the node
+  had to be unticked first. The button now reads `Switch 'audio' off and open`
+  and does both; ticking the square again goes back to the joined song.
+  Choosing the song the node is already on only unticks the square and keeps
+  its edits. See [Saved songs](README.md#saved-songs).
+- **`Break...` names both sections, and a selected section gets the break
+  after it.** The list named only the section the break went before, and a
+  section selected on the strip got the break in front of it, where a user
+  who selects a chorus means after it; the break seemed to land at random. A
+  selection now gets the break at its end, or at the section line nearest its
+  end; with nothing selected it still goes before the first chorus. Each entry
+  of the list names the section before the break and the one after it, with
+  the time, and the line under the list says it in words: `Plays 4 bars after
+  the chorus, before the verse`. See
+  [What an edit can do](README.md#what-an-edit-can-do).
 
 ## 0.13.2 - 2026-10-14
 

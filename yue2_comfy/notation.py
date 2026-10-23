@@ -1321,6 +1321,19 @@ def interlude_head(text: str, stop: int, seam: int) -> str:
     ``write`` hands its text back without the newline it ended with, and the
     model has to start on a line of its own, so that newline is put back.
     """
+    return section_head(text, stop, seam, INTERLUDE)
+
+
+def section_head(text: str, stop: int, seam: int, name: str) -> str:
+    """The first *stop* bars of *text* with the section *name* begun after them, for the model to write.
+
+    ``interlude_head`` is this with the section a break is written under. The
+    notes sung from *seam* on, in units of L from the start of the song, are
+    the first phrase of the section that starts at bar *stop*, sung across the
+    bar line ahead of it; they are taken out of the bars kept, so the model
+    writes that phrase itself, as the start of the section it is told comes
+    next.
+    """
     kept = head(text, stop)
     sheet = read(kept)
     vocal = _sung_before(sheet, seam)
@@ -1330,7 +1343,7 @@ def interlude_head(text: str, stop: int, seam: int) -> str:
     ending = "\r\n" if "\r\n" in kept else "\n"
     if not kept.endswith(("\n", "\r")):
         kept += ending
-    return kept + "% " + INTERLUDE + ending
+    return kept + "% " + " ".join(str(name).split()) + ending
 
 
 def head_bars(text: str) -> int:
@@ -1552,6 +1565,132 @@ def interluded(text: str, written: str, bar: int, bars: int, seam: int) -> str:
         _broken_back(before, read(result), bar, bars, vocal)
     except (ValueError, KeyError, IndexError) as error:
         raise ValueError(NOT_BROKEN.format(reason=_reason(error))) from error
+    raw = str(text or "")
+    leading = raw[:len(raw) - len(raw.lstrip())]
+    trailing = raw[len(raw.rstrip()):]
+    return leading + result.strip() + trailing
+
+
+NOT_RESTYLED = (
+    "The bars sung in the other style could not be laid into the score: {reason}.\n\n"
+    "Nothing was changed. The score is as it was."
+)
+
+KEY_CHANGE_RESTYLE = (
+    "Bar {bar} changes key halfway through, and the bars sung in another style would split that "
+    "change. Choose bars that do not start or end next to it."
+)
+
+
+def _restyled_back(before, other, after, pieces) -> None:
+    """The score with another score's bars in it read back: every bar has the length, meter and key it had where it came from."""
+    taken = [(before if which == 0 else other)["bars"][bar]
+             for which, low, high in pieces for bar in range(low, high)]
+    if len(after["bars"]) != len(taken):
+        raise ValueError("the score has {} bars where {} should be".format(
+            len(after["bars"]), len(taken)))
+    for number, (bar, was) in enumerate(zip(after["bars"], taken), 1):
+        if (bar["length"], bar["meter"]) != (was["length"], was["meter"]):
+            raise ValueError("bar {} changed its length".format(number))
+        if bar["key"] != was["key"]:
+            raise ValueError("bar {} changed its key".format(number))
+    if after["bpm"] != before["bpm"] or after["unit"] != before["unit"]:
+        raise ValueError("the tempo or the note length changed")
+
+
+def restyled(text: str, donor: str, spans) -> str:
+    """*text* with the bars each of *spans* names taken from *donor*: the score of a song another style sang.
+
+    *spans* are ``(first, stop, dfirst, dstop)``, in order and apart from each
+    other: bars *first* to *stop* of *text* give way to bars *dfirst* to
+    *dstop* of *donor*. The two may hold different numbers of bars, when the
+    model wrote the donor's melody there itself. Every bar keeps its
+    characters, cut into its own groups as ``moved`` cuts them, and a section
+    comment goes with the bars under it; a stretch that starts without one is
+    named after the section it starts in, in the score it comes from. A meter
+    or key in force where a stretch lands that is not its own is written at
+    its head, and a tie from the last bar before every seam is taken off, the
+    note it held on into belonging to the other score. Everything around
+    *text* is kept, its final newline included.
+
+    The two scores must go at the same tempo on the same note length, which a
+    donor written on from *text*'s own head does. The result is read back
+    before it is returned: every bar has the length, meter and key it had in
+    the score it came from. A bar that changes key halfway through cannot sit
+    at a seam, see ``KEY_CHANGE_RESTYLE``.
+    """
+    source, score, lines, _pieces, sections, inline = _parsed(text)
+    given, other, other_lines, _other_pieces, other_sections, other_inline = _parsed(donor)
+    count = len(score.voices["Vocal"].bars)
+    total = len(other.voices["Vocal"].bars)
+    spans = [tuple(span) for span in spans]
+    if not spans:
+        raise ValueError("No bars were asked for from the other score.")
+    at = 0
+    for first, stop, dfirst, dstop in spans:
+        if not (all(_whole(value) for value in (first, stop, dfirst, dstop))
+                and at <= first < stop <= count and 0 <= dfirst < dstop <= total):
+            raise ValueError("Bars {} to {} of a score of {} cannot give way to bars {} to {} of one "
+                             "of {}.".format(first + 1, stop, count, dfirst + 1, dstop, total))
+        at = stop
+    locked = sorted({number for number in inline for first, stop, _a, _b in spans
+                     if first - 1 <= number <= first or stop - 1 <= number <= stop}
+                    | {number for number in other_inline for _a, _b, dfirst, dstop in spans
+                       if dfirst <= number < dstop})
+    if locked:
+        raise ValueError(KEY_CHANGE_RESTYLE.format(bar=locked[0] + 1))
+    bodies = [line.rstrip("\r\n") for line in lines]
+    ending = lines[0][len(bodies[0]):] or "\n"
+    try:
+        before, laid = read(source), read(given)
+        if (before["bpm"], before["unit"]) != (laid["bpm"], laid["unit"]):
+            raise ValueError("the other score goes at another tempo or on another note length")
+        old = _cut_at(_blocks(bodies), [bar for span in spans for bar in span[:2]])
+        new = _cut_at(_blocks([line.rstrip("\r\n") for line in other_lines]),
+                      [bar for span in spans for bar in span[2:]])
+        pieces = []
+        at = 0
+        for first, stop, dfirst, dstop in spans:
+            pieces += [(0, at, first), (1, dfirst, dstop)]
+            at = stop
+        pieces = [piece for piece in pieces + [(0, at, count)] if piece[2] > piece[1]]
+        state = {name: ("M:" + bodies[2][2:], "K:" + bodies[7][2:]) for name in abc_tools.VOICES}
+        out = [body + ending for body in bodies[:HEADER_LINES]]
+        for which, low, high in pieces:
+            blocks, parsed, named = (old, score, sections) if which == 0 else (new, other,
+                                                                                other_sections)
+            chosen = [block for start, block in blocks if low <= start < high]
+            for place, block in enumerate(chosen):
+                names = list(block["names"])
+                if place == 0 and not names and named[low][1]:
+                    names = [named[low][1]]
+                out.extend("% " + name + ending for name in names)
+                for name in abc_tools.VOICES:
+                    head_lines = list(block["voices"][name]["head"])
+                    if place == 0:
+                        voice = parsed.voices[name]
+                        start, _length, meter = voice.bars[low]
+                        wanted = ("M:{}/{}".format(*meter), "K:" + _key_at(voice.keys, start))
+                        for field, have in zip(wanted, state[name]):
+                            if field != have and not any(line.startswith(field[:2])
+                                                         for line in head_lines[1:]):
+                                head_lines.insert(1, field)
+                    meter, key = state[name]
+                    for line in head_lines[1:]:
+                        if line.startswith("M:"):
+                            meter = line
+                        elif line.startswith("K:"):
+                            key = line
+                    state[name] = (meter, key)
+                    music = block["voices"][name]["music"]
+                    if place == len(chosen) - 1:
+                        music = _untied(music)
+                    out.extend(line + ending for line in head_lines)
+                    out.append(music + ending)
+        result = "".join(out)
+        _restyled_back(before, laid, read(result), pieces)
+    except (ValueError, KeyError, IndexError) as error:
+        raise ValueError(NOT_RESTYLED.format(reason=_reason(error))) from error
     raw = str(text or "")
     leading = raw[:len(raw) - len(raw.lstrip())]
     trailing = raw[len(raw.rstrip()):]

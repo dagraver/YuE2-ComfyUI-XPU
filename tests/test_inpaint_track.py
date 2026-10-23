@@ -8,12 +8,13 @@ one that was sung, and its bars have moved. Nothing here needs torch.
 
 from __future__ import annotations
 
+import json
 import types
 
 import pytest
 
 from yue2_comfy import notation
-from yue2_comfy.inpaint import grid, track
+from yue2_comfy.inpaint import grid, ops, track
 
 HEADER = ('X:1\nT:\nM:4/4\nL:1/16\nQ:1/4=120\n'
           'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"\n'
@@ -72,6 +73,19 @@ def test_an_edit_list_reads_as_the_window_wrote_it():
     assert (second.op, second.bars, second.takes, second.take) == ("cut", (2, 4), 1, None)
     assert (third.op, third.seconds, third.takes) == ("retake", (1.5, 4.0), 2)
     assert track.read(track.written((first, second, third)), takes=2) == (first, second, third)
+
+
+def test_a_list_may_name_the_song_it_was_made_on():
+    """The window writes {"song": key, "edits": [...]}; a bare list, as every older one is, names none."""
+    edits = '[{"op": "cut", "bars": [2, 4]}]'
+    named = '{"song": "%s", "edits": %s}' % ("ab" * 32, edits)
+    assert track.read(named) == track.read(edits)
+    assert track.song_of(named) == "ab" * 32
+    for text in (edits, "", None, "not json", '{"edits": []}', '{"song": 5, "edits": []}'):
+        assert track.song_of(text) == "", text
+    for text in ('{"song": 5, "edits": []}', '{"song": "x"}', '{"song": "x", "edits": {}}'):
+        with pytest.raises(ValueError, match="does not hold a JSON list"):
+            track.read(text)
 
 
 def test_an_edit_list_that_is_not_one_is_refused_in_words_a_person_can_act_on():
@@ -321,3 +335,207 @@ def test_asking_for_another_take_does_not_rename_what_is_already_sung():
     three = track.read('[{"op": "retake", "bars": [2, 6], "seed": 5, "takes": 3, "take": 2}]')[0]
     assert track.name("song", [], two) == track.name("song", [], three)
     assert three.seeds()[:2] == two.seeds()
+
+
+TWICE = score(("intro", ["z16", "z8z2DDA2AA"]),
+              ("verse", ["A2DDAAA2AGGGG2GG", "AGGGGFFFFDD2B4"]),
+              ("chorus", ["A2z8D2B4", "A2z4FG3F2B2B2"]),
+              ("verse", ["A2DDAAA2AGGGG2GG", "AGGGGFFFFDD2B4"]),
+              ("chorus", ["A2z8D2B4", "A2z4FG3F2B2B2"]),
+              ("outro", ["z16", "z16"]))
+"""Two choruses: intro 0-1, verse 2-3, chorus 4-5, verse 6-7, chorus 8-9, outro 10-11."""
+
+TWICE_WORDS = ("[Verse]\none two three\nfour five six\n\n[Chorus]\nseven eight\n\n"
+               "[Verse]\nnine ten\n\n[Chorus]\nseven eight")
+
+TWICE_FRAMES = 640
+"""The twelve bars from 0.5 s, two seconds each, and a little after them."""
+
+WRITTEN_ON = ("V: Vocal\nA2z8D2B4|A2z4FG3F2B2B2|A2z8DDBB3|\nV: Ins\nZ|Z|Z|\n"
+              "% verse\nV: Vocal\nA2DDAAA2AGGGG2GG|AGGGGFFFFDD2B4|\nV: Ins\nZ|Z|\n"
+              "% chorus\nV: Vocal\nA2z8D2B4|A2z4FG3F2B2B2|A2z8DDBB3|\nV: Ins\nZ|Z|Z|\n"
+              "% outro\nV: Vocal\nz16|z16|\nV: Ins\nZ|Z|\n")
+"""What a stand-in for the model writes after the first verse: three-bar choruses."""
+
+
+def twice_state(offset=0.5, lyrics=TWICE_WORDS):
+    sheet = notation.read(TWICE)
+    clock = grid.Grid(offset=offset, rate=1.0, tick=grid.tick_seconds(sheet),
+                      starts=grid.starts_of(sheet))
+    song = types.SimpleNamespace(score=TWICE, lyrics=lyrics, frames=TWICE_FRAMES)
+    return track.opened(song, clock)
+
+
+def restyle(**fields):
+    item = {"op": "restyle", "bars": [4, 6], "style": "hip hop, male rapper", "seed": 3}
+    item.update(fields)
+    return track.read(json.dumps([item]))[0]
+
+
+def written_twice():
+    """A new melody for both choruses: the plan, the score the model wrote and its grid."""
+    state = twice_state()
+    step = track.plan(state, restyle(melody="new", also=[[8, 10]]))
+    written = step.score + WRITTEN_ON
+    sheet = notation.read(written)
+    other = grid.Grid(offset=0.3, rate=1.0, tick=grid.tick_seconds(sheet),
+                      starts=grid.starts_of(sheet))
+    return state, step, written, sheet, other
+
+
+def test_a_restyle_reads_as_the_window_writes_it_and_writes_back_the_same():
+    edit = restyle(also=[[8, 10]], melody="new", octave=-1, takes=2, take=1, vary=1.2)
+    assert (edit.style, edit.melody, edit.octave, edit.also) == (
+        "hip hop, male rapper", "new", -1, ((8, 10),))
+    assert (edit.bars, edit.seed, edit.takes, edit.take, edit.vary) == ((4, 6), 3, 2, 1, 1.2)
+    plain = restyle(style="  soft folk \n")
+    assert (plain.style, plain.melody, plain.octave, plain.also) == ("soft folk", "same", 0, ())
+    assert json.loads(track.written([plain]))[0] == {
+        "op": "restyle", "bars": [4, 6], "style": "soft folk", "melody": "same", "octave": 0,
+        "seed": 3, "takes": 1}
+    assert track.read(track.written([edit])) == (edit,)
+
+
+@pytest.mark.parametrize("fields,says", [
+    ({"bars": None, "seconds": [1.0, 4.0]}, "it selects bars, not seconds"),
+    ({"style": "  "}, "gives no style"),
+    ({"style": None}, "gives no style"),
+    ({"style": "x" * 1001}, "1001 characters"),
+    ({"melody": "rap"}, "the melody 'rap'"),
+    ({"octave": 2}, "moves the voice 2 octaves"),
+    ({"octave": 0.5}, "the octave is not a whole number"),
+    ({"also": [[5, 9]]}, "overlap"),
+    ({"also": [[8]]}, "not a pair"),
+    ({"also": {"bars": 1}}, "not a list"),
+    ({"also": [[9, 8]]}, "not a stretch"),
+])
+def test_a_restyle_that_cannot_be_sung_is_refused_in_words(fields, says):
+    item = {"op": "restyle", "bars": [4, 6], "style": "hip hop", "seed": 3}
+    item.update(fields)
+    if item["bars"] is None:
+        del item["bars"]
+    with pytest.raises(ValueError, match=says):
+        track.read(json.dumps([item]))
+
+
+def test_the_takes_of_a_restyle_are_named_by_its_style_its_melody_and_its_voice():
+    first = restyle()
+    names = {track.name("song", [], edit) for edit in (
+        first, restyle(style="soft folk"), restyle(melody="new"), restyle(octave=1),
+        restyle(also=[[8, 10]]))}
+    assert len(names) == 5
+    assert track.name("song", [], first) == track.name("song", [], restyle(takes=3, take=2))
+
+
+def test_a_restyle_of_the_same_notes_sings_the_song_s_own_score_over_any_bars():
+    state = twice_state()
+    step = track.plan(state, restyle(bars=[5, 6], also=[[8, 10]]))
+    sheet, clock = state.sheet, state.clock
+    marks = grid.seams(sheet)
+    beat, margin = grid._beat_and_margin(sheet, clock)
+    opens = clock.moment(4, grid.opening(marks[4], beat, margin))
+    retake = grid.retake_frames(sheet, clock, marks, 5, 6, state.frames)[0]
+    assert (step.kind, step.stretches, step.blocks, step.score) == (
+        "restyle", ((5, 6), (8, 10)), (), TWICE)
+    assert step.start == min(opens, retake - track.SUNG_LEAST)
+    assert step.stop == grid.retake_frames(sheet, clock, marks, 8, 10, state.frames)[1]
+    assert step.lyrics == TWICE_WORDS and step.bars == (5, 10)
+    assert track.restyle_spans(state, step, TWICE) == ((5, 6), (8, 10))
+    bars, seconds = track.restyle_reach(state, step, sheet, ((5, 6), (8, 10)))
+    assert bars == 12 and seconds == pytest.approx(0.5 + 24.0 + track.RESTYLE_TAIL)
+    with pytest.raises(ValueError, match="has 10 bars where the song has 12"):
+        track.restyle_spans(state, step, notation.head(TWICE, 10))
+
+
+def test_a_restyle_reaching_the_end_of_the_song_sings_the_other_song_whole():
+    state = twice_state()
+    step = track.plan(state, restyle(bars=[10, 12]))
+    assert track.restyle_reach(state, step, state.sheet, ((10, 12),)) == (12, None)
+
+
+@pytest.mark.parametrize("fields,says", [
+    ({"bars": [4, 5]}, "bar line 6 is inside the chorus"),
+    ({"bars": [0, 2]}, "the first section has none"),
+    ({"bars": [8, 12]}, "the outro at bar 11 sings none of them"),
+])
+def test_a_new_melody_goes_by_whole_sections_that_sing(fields, says):
+    with pytest.raises(ValueError, match=says):
+        track.plan(twice_state(), restyle(melody="new", **fields))
+
+
+def test_a_new_melody_needs_the_words_matched_with_the_sections():
+    state = twice_state(lyrics="[Chorus]\none\n\n[Chorus]\ntwo")
+    with pytest.raises(ValueError, match="could not be matched"):
+        track.plan(state, restyle(melody="new"))
+
+
+def test_a_new_melody_is_written_before_the_sections_part_from_the_order_of_the_words():
+    """The model sang a bridge where the words have their second verse: the first chorus is still told."""
+    parted = "[Verse]\none two three\n\n[Chorus]\nseven eight\n\n[Bridge]\nnine ten\n\n[Chorus]\nseven"
+    assert ops.sung_sections(parted, TWICE) == [1, 2, None, None]
+    state = twice_state(lyrics=parted)
+    assert track.plan(state, restyle(melody="new")).blocks == ((1, 1),)
+    with pytest.raises(ValueError, match="from the verse at bar 7 on"):
+        track.plan(state, restyle(melody="new", also=[[8, 10]]))
+    split = "[Verse]\none\n\n[Verse]\ntwo\n\n[Verse]\nthree"
+    assert ops.sung_sections(split, TWICE) == [1, None, None], "a sung chorus is not stepped over"
+    assert ops.sung_sections(TWICE_WORDS, TWICE) == [1, 2, 3, 4], "the intro's notes are"
+
+
+def test_a_new_melody_is_written_on_from_the_bars_before_it_and_found_again_by_its_words():
+    state, step, written, sheet, _other = written_twice()
+    assert step.blocks == ((1, 1), (3, 3)), "the first chorus and the second, among the sung blocks"
+    assert step.score.endswith("% chorus\n") and notation.head_bars(step.score) == 4
+    assert track.restyle_spans(state, step, written) == ((4, 7), (9, 12))
+    bars, seconds = track.restyle_reach(state, step, sheet, ((4, 7), (9, 12)))
+    assert bars == 14 and seconds == pytest.approx(0.5 + 28.0 + track.RESTYLE_TAIL)
+    renamed = step.score + WRITTEN_ON.replace("% verse", "% bridge")
+    with pytest.raises(ValueError, match="could not be matched"):
+        track.restyle_spans(state, step, renamed)
+
+
+def test_a_restyle_lays_both_songs_cut_at_one_shift_and_sings_the_bar_before_each_seam():
+    state, step, written, sheet, other = written_twice()
+    spans = track.restyle_spans(state, step, written)
+    laid = track.restyle_layout(state, step, sheet, other, 720, spans)
+    assert [piece[0] for piece in laid.pieces] == [0, 1, 0, 1, 0]
+    assert laid.stretches == ((0, 0, 4), (1, 4, 7), (0, 6, 8), (1, 9, 12), (0, 10, 12))
+    marks, theirs = grid.seams(state.sheet), grid.seams(sheet)
+    beat, margin = grid._beat_and_margin(state.sheet, state.clock)
+    enter = grid.shared_shift([marks[4], theirs[4]], beat, margin)
+    leave = grid.shared_shift([marks[6], theirs[7]], beat, margin)
+    assert laid.pieces[0] == (0, 0, state.clock.moment(4, enter))
+    assert laid.pieces[1] == (1, other.moment(4, enter), other.moment(7, leave))
+    assert laid.pieces[2][1] == state.clock.moment(6, leave)
+    assert laid.pieces[-1] == (0, laid.pieces[-1][1], TWICE_FRAMES)
+    assert laid.owners == (1, 0, 1, 0), "into the new style under its prompt, out under the song's"
+    seams, at = [], 0
+    for _which, start, stop in laid.pieces[:-1]:
+        at += stop - start
+        seams.append(at)
+    assert [seam for _start, seam in laid.sung] == seams
+    assert all(seam - start >= track.SUNG_LEAST for start, seam in laid.sung)
+    assert laid.sung[0][0] == step.start, "the bar before the first stretch, where the plan opens"
+    assert laid.lines == other.bar_seconds()
+    with pytest.raises(ValueError, match="stops before the bars"):
+        track.restyle_layout(state, step, sheet, other, 500, spans)
+
+
+def test_the_song_after_a_restyle_has_the_other_song_s_bars_where_they_were_laid():
+    state, step, written, sheet, other = written_twice()
+    spans = track.restyle_spans(state, step, written)
+    laid = track.restyle_layout(state, step, sheet, other, 720, spans)
+    score = notation.restyled(TWICE, written, [(4, 6, 4, 7), (8, 10, 9, 12)])
+    left = track.after(state, step, 0, score, (), laid)
+    assert len(left.sheet["bars"]) == 14 and left.lyrics == TWICE_WORDS
+    assert [section["name"] for section in left.sheet["sections"]] == [
+        "intro", "verse", "chorus", "verse", "chorus", "outro"]
+    assert left.frames == sum(stop - start for _which, start, stop in laid.pieces)
+    (_own, _zero, cut), (_donor, begin, end) = laid.pieces[:2]
+    assert left.clock.at(5) == pytest.approx(other.at(5) + (cut - begin) * 0.04)
+    assert left.clock.at(7) == pytest.approx(
+        state.clock.at(6) + (cut + end - begin - laid.pieces[2][1]) * 0.04)
+    sung = ((laid.sung[0][0], laid.sung[0][1], laid.sung[0][1] - laid.sung[0][0] + 5),)
+    longer = track.after(state, step, 0, score, sung, laid)
+    assert longer.frames == left.frames + 5
+    assert longer.clock.at(13) == pytest.approx(left.clock.at(13) + 0.2)

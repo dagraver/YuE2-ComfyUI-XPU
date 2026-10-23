@@ -657,3 +657,149 @@ def test_a_take_with_no_voice_left_in_its_break_is_kept_before_one_that_sings():
     assert core.best([take(-2.0, -3.0), take(-9.0, -5.0)]) == 1, "among singing ones, the quieter"
     assert core.best([take(None, -3.0), take(None, -5.0)]) == 0, "unheard, the join"
     assert core.voiced(take(core.VOICE_LEFT + 0.1, 0)) and not core.voiced(take(core.VOICE_LEFT, 0))
+
+
+OTHER_FRAMES = 90
+
+
+def other_song(lm, seed=11):
+    """A second song of the tiny model, sung from other codes under another prompt."""
+    prefix = prompt("[verse]\nla la", (8, 9))
+    codec = codec_of(OTHER_FRAMES)[::-1]
+    latents = nar.synthesize(lm, prefix, codec, seed, steps=4)
+    sound = decode_locally(latents)
+    made = songs.made("YuE2 Edit Track", "another style", "[verse]\nla la", seed, SETTINGS, "X:1",
+                      prefix, None, codec, [[seed, 0, OTHER_FRAMES]], latents, 48000, 2,
+                      sound.shape[-1])
+    return made, sound, latents
+
+
+def test_a_song_laid_from_two_songs_keeps_every_frame_where_it_came_from(models, song, lm):
+    made, sound = song
+    other, other_sound, _latents = other_song(lm)
+    pieces = [(0, 0, 30), (1, 40, 70), (0, 60, FRAMES)]
+    timing = {}
+    codec, runs, drawn, laid, sung = core._spliced(
+        models, [(made, sound), (other, other_sound)], pieces, (), [], made.prefix, SETTINGS, None,
+        timing)
+    assert codec == list(made.codec[:30]) + list(other.codec[40:70]) + list(made.codec[60:])
+    assert runs == [[SEED, 0, 30], [11, 40, 30], [SEED, 60, FRAMES - 60]]
+    assert sung == () and set(timing) == {"acoustic", "decode"}
+    known = torch.cat([core.latents_of(made)[:30], core.latents_of(other)[40:70],
+                       core.latents_of(made)[60:]])
+    held = torch.ones(len(codec), dtype=torch.bool)
+    for seam in (30, 60):
+        held[seam - ops.MARGIN:seam + ops.MARGIN] = False
+    assert torch.equal(drawn[held], known[held]) and not torch.equal(drawn[~held], known[~held])
+    assert laid.shape[-1] == len(codec) * HOP - (FRAMES * HOP - made.samples)
+    assert torch.allclose(laid, decode_locally(drawn)[..., :laid.shape[-1]], atol=1e-6)
+
+
+def a_restyle(blocks=()):
+    """What a restyle's plan hands the core, as far as the core reads it."""
+    state = types.SimpleNamespace(frames=FRAMES, score="X:1")
+    step = types.SimpleNamespace(blocks=blocks, score="X:head", lyrics="[verse]\nla la",
+                                 stretches=((2, 4),), start=20, stop=70, pulse=None)
+    return state, step
+
+
+def test_a_restyle_sings_a_song_in_the_style_and_lays_its_bars_in_under_each_side_s_prompt(
+        models, song, lm, monkeypatch):
+    from yue2_comfy.inpaint import track
+
+    made, sound = song
+    other, other_sound, latents = other_song(lm)
+    asked, measured, moved = [], [], []
+
+    def run(models, style, lyrics, seed, settings, progress=None, cancelled=None, edited=None,
+            tune_seconds=None):
+        asked.append((style, lyrics, seed, settings["transpose"], settings["max_seconds"], edited))
+        return other_sound, edited, "", {}, generate.Performance(
+            prefix=tuple(other.prefix), negative=None, codec=tuple(other.codec), seed=11,
+            latents=latents)
+
+    def clock_of(song_sung, waveform, sheet, bars, progress):
+        measured.append((song_sung.style, song_sung.frames, bars, waveform.shape[-1]))
+        return "a clock"
+
+    laid = track.Laid(pieces=((0, 0, 30), (1, 40, 70), (0, 60, FRAMES)),
+                      stretches=((0, 0, 2), (1, 2, 4), (0, 4, 6)),
+                      sung=((20, 30), (55, 60)), owners=(1, 0), lines=(0.0, 1.0))
+    monkeypatch.setattr(generate, "run", run)
+    monkeypatch.setattr(generate, "moved", lambda text, semitones, cot: moved.append(
+        semitones) or text + " moved")
+    monkeypatch.setattr(track, "restyle_spans", lambda state, step, text: ((2, 4),))
+    monkeypatch.setattr(track, "restyle_reach", lambda state, step, sheet, spans: (6, 41.2))
+    monkeypatch.setattr(track, "restyle_layout", lambda *args: laid)
+    monkeypatch.setattr("yue2_comfy.notation.read", lambda text: {"bars": []})
+    monkeypatch.setattr("yue2_comfy.notation.restyled", lambda own, text, spans: "X:3")
+    sung = []
+    seam_sung = core._seam_sung
+
+    def seam(models, prefix, negative, ids, low, high, *args, **kwargs):
+        sung.append(tuple(prefix))
+        return seam_sung(models, prefix, negative, ids, low, high, *args, **kwargs)
+
+    monkeypatch.setattr(core, "_seam_sung", seam)
+    state, step = a_restyle()
+    takes = core.restyled(models, made, sound, state, step, "another style", -1, [5], SETTINGS,
+                          clock_of)
+    assert asked == [("another style", "[verse]\nla la", 5, 0, 42.0, "X:head moved")]
+    assert moved == [-12]
+    assert measured == [("another style", OTHER_FRAMES, 6, other_sound.shape[-1])]
+    assert sung == [tuple(other.prefix), tuple(prompt("[verse]\nla la", Words().encode("X:3")))], (
+        "into the stretch under the style's prompt, out of it under the song's with its new score")
+    take, = takes
+    assert take.laid is laid and len(take.sung) == 2 and take.join is None
+    frames = take.song.frames
+    assert take.count == frames - (FRAMES - step.stop) - step.start
+    assert take.song.score == "X:3" and take.song.style == made.style
+    assert list(take.song.codec[:20]) == list(made.codec[:20])
+    assert set(take.timing) >= {"donor", "place", "perform", "acoustic", "decode"}
+
+
+def test_a_new_melody_is_written_again_from_another_seed_until_its_bars_are_found(
+        models, song, lm, monkeypatch):
+    from yue2_comfy.inpaint import track
+
+    made, sound = song
+    other, other_sound, latents = other_song(lm)
+    written, tried = [], []
+
+    def score_on(models, song, lyrics, head, seed, settings, progress=None, band=None,
+                 cancelled=None, most=None):
+        written.append((song.style, head, seed))
+        return head + " written %d" % len(written)
+
+    def spans(state, step, text):
+        tried.append(text)
+        if text.endswith("written 1"):
+            raise ValueError(track.WRITTEN_UNMATCHED)
+        return ((2, 4),)
+
+    monkeypatch.setattr(core, "score_on", score_on)
+    monkeypatch.setattr(track, "restyle_spans", spans)
+    monkeypatch.setattr(track, "restyle_reach", lambda state, step, sheet, found: (6, None))
+    monkeypatch.setattr(track, "restyle_layout", lambda *args: track.Laid(
+        pieces=((0, 0, 30), (1, 40, 70), (0, 60, FRAMES)),
+        stretches=((0, 0, 2), (1, 2, 4), (0, 4, 6)), sung=(), owners=(), lines=(0.0,)))
+    monkeypatch.setattr("yue2_comfy.notation.read", lambda text: {"bars": []})
+    monkeypatch.setattr("yue2_comfy.notation.restyled", lambda own, text, found: "X:3")
+    sung = []
+    monkeypatch.setattr(generate, "run", lambda models, style, lyrics, seed, settings, *args,
+                        **kwargs: sung.append((kwargs.get("edited"), settings["max_seconds"])) or (
+        other_sound, "", "", {}, generate.Performance(
+            prefix=tuple(other.prefix), negative=None, codec=tuple(other.codec), seed=11,
+            latents=latents)))
+    state, step = a_restyle(blocks=((1, 1),))
+    core.restyled(models, made, sound, state, step, "another style", 0, [5], SETTINGS,
+                  lambda *args: "a clock")
+    assert written == [("another style", "X:head", 5),
+                       ("another style", "X:head", 5 + core.SCORE_SEED_STEP)]
+    assert sung == [("X:head written 2", SETTINGS["max_seconds"])], (
+        "no octave, and a song sung whole keeps its own ceiling")
+    monkeypatch.setattr(track, "restyle_spans", lambda *args: (_ for _ in ()).throw(
+        ValueError(track.WRITTEN_ORDER)))
+    with pytest.raises(ValueError, match="none of them could the bars"):
+        core.restyled(models, made, sound, state, step, "another style", 0, [5], SETTINGS,
+                      lambda *args: "a clock")

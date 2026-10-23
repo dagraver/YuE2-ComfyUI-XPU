@@ -947,3 +947,69 @@ def test_changes_far_apart_sung_one_stretch_at_a_time_end_as_the_whole_change(na
         current = laid["abc"]
     assert notation.changed(current, after) == []
     assert current.endswith(text[len(text.rstrip()):])
+
+
+RESTYLE_HEAD = ('X:1\nT:\nM:4/4\nL:1/16\nQ:1/4=120\n'
+                'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"\n'
+                'V: Ins clef=treble name="Ins Melody" snm="Inst."\nK:C\n')
+
+OWN = (RESTYLE_HEAD + "% verse\nV: Vocal\nC16|D16|\nV: Ins\nZ|Z|\n"
+       "% chorus\nV: Vocal\nE16|F8G8-|\nV: Ins\nZ|Z|\n"
+       "% verse\nV: Vocal\nG2A8B6|c16|\nV: Ins\nZ|Z|\n")
+"""A song: verse 0-1, chorus 2-3 (its last note tied on into the verse), verse 4-5."""
+
+OTHER = (RESTYLE_HEAD + "% verse\nV: Vocal\nC16|D16|\nV: Ins\nZ|Z|\n"
+         "% chorus\nV: Vocal\nC,4C,4C,4C,4|D,4D,4D,4D,4|E,16|\nV: Ins\nC16|C16|C16|\n"
+         "% verse\nV: Vocal\nz16|z16|\nV: Ins\nZ|Z|\n")
+"""The same song in another style: its chorus 2-4 is three bars on low notes."""
+
+
+def test_bars_sung_in_another_style_take_the_place_of_the_song_s_own():
+    out = notation.restyled(OWN, OTHER, [(2, 4, 2, 5)])
+    sheet = notation.read(out)
+    assert len(sheet["bars"]) == 7
+    assert [(section["bar"], section["name"]) for section in sheet["sections"]] == [
+        (0, "verse"), (2, "chorus"), (5, "verse")]
+    pitches = sorted({note["pitch"] for note in sheet["notes"]["Vocal"]
+                      if sheet["bars"][2]["start"] <= note["start"] < sheet["bars"][5]["start"]})
+    assert pitches == [48, 50, 52], "the other song's chorus, an octave below the song's"
+    assert "C16|C16|C16|" in out, "its playing comes with it"
+    assert out.endswith("\n") and out.startswith("X:1\n")
+    assert "G2A8B6|c16|" in out, "the song's own bars after it, character for character"
+
+
+def test_a_stretch_without_a_name_of_its_own_is_named_after_the_section_it_starts_in():
+    out = notation.restyled(OWN, OTHER, [(3, 4, 3, 5)])
+    sheet = notation.read(out)
+    assert [(section["bar"], section["name"]) for section in sheet["sections"]] == [
+        (0, "verse"), (2, "chorus"), (3, "chorus"), (5, "verse")]
+
+
+def test_a_tie_into_a_seam_is_taken_off():
+    """The song's chorus ties its last note on into the verse; the other song's verse follows it now."""
+    out = notation.restyled(OWN, OTHER, [(4, 6, 5, 7)])
+    assert "F8G8|" in out and "F8G8-|" not in out
+
+
+def test_bars_from_a_score_at_another_tempo_are_refused():
+    faster = OTHER.replace("Q:1/4=120", "Q:1/4=90")
+    with pytest.raises(ValueError, match="another tempo"):
+        notation.restyled(OWN, faster, [(2, 4, 2, 5)])
+
+
+@pytest.mark.parametrize("spans", [[], [(2, 4, 2, 9)], [(2, 4, 2, 5), (3, 6, 5, 7)],
+                                   [(4, 2, 2, 5)]])
+def test_stretches_that_are_not_bars_of_both_scores_are_refused(spans):
+    with pytest.raises(ValueError):
+        notation.restyled(OWN, OTHER, spans)
+
+
+def test_a_section_is_begun_after_the_bars_kept_without_the_phrase_sung_into_it():
+    sheet = notation.read(OWN)
+    head = notation.section_head(OWN, 2, sheet["bars"][1]["start"] + 8, "chorus")
+    assert head.endswith("% chorus\n")
+    kept = notation.read(head.rsplit("% chorus", 1)[0])
+    assert len(kept["bars"]) == 2
+    assert all(note["start"] < sheet["bars"][1]["start"] + 8 for note in kept["notes"]["Vocal"])
+    assert notation.interlude_head(OWN, 2, sheet["bars"][2]["start"]).endswith(
+        "% " + notation.INTERLUDE + "\n")

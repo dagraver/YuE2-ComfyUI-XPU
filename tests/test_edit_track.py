@@ -11,6 +11,7 @@ times and a fourth run sings none.
 from __future__ import annotations
 
 import json
+import re
 import time
 import types
 
@@ -74,9 +75,9 @@ def torch():
     return pytest.importorskip("torch")
 
 
-def a_song(frames=FRAMES, score_text=RAP, lyrics=LYRICS, settings=None):
+def a_song(frames=FRAMES, score_text=RAP, lyrics=LYRICS, settings=None, style="a style"):
     """A song the store will take: the smallest one that is still a song."""
-    return songs.made("YuE2 Generate Song", "a style", lyrics, 7,
+    return songs.made("YuE2 Generate Song", style, lyrics, 7,
                       dict(settings or {"cot": "full"}), score_text, [11, 12, 13], None,
                       [1] * frames, [[3, 0, frames]], b"\0" * (frames * 64 * 4), RATE, 2,
                       frames * SAMPLES_A_FRAME)
@@ -1062,6 +1063,67 @@ def test_the_takes_kept_are_dropped_oldest_first_when_the_memory_fills():
     assert held.get("a") is not None and held.get("c") is not None
 
 
+TAKE_BYTES = FRAMES * SAMPLES_A_FRAME * 2 * 4
+"""What one take of the stand's song holds: every take is the whole song, stereo, in float32."""
+
+
+def retakes_on(count, take=None):
+    """``count`` retakes of bars 5 to 8, one on another, each with a seed of its own; ``take`` keeps a take of the last."""
+    edits = [{"op": "retake", "bars": [4, 8], "seed": 40 + 10 * index} for index in range(count)]
+    if take is not None:
+        edits[-1]["take"] = take
+    return json.dumps(edits)
+
+
+def test_a_list_past_the_memory_for_takes_sings_each_edit_once(stand, monkeypatch):
+    """Issue #13. A run walks its list from the first edit, and under plain least-recently-used a
+    list whose takes outgrew the memory dropped its first edit to make room for its last; the next
+    run sang the first again and dropped the second for it, and so on down the list, so every run
+    sang every edit. Here there is room for three takes, and the list grows to five edits of two."""
+    monkeypatch.setattr(edit_track, "RESULTS", edit_track.Results(budget=3 * TAKE_BYTES))
+    for count in range(1, 6):
+        stand.calls.clear()
+        run(stand, retakes_on(count))
+        assert len(stand.calls) == 1, "only the edit added is sung"
+        stand.calls.clear()
+        run(stand, retakes_on(count))
+        assert stand.calls == [], "a run of the same list sings nothing"
+
+
+def test_past_the_memory_the_edits_before_the_last_keep_only_the_take_kept(stand, monkeypatch):
+    """The other takes of an earlier edit are there to compare, and comparing is over once another
+    edit stands on it; the last edit keeps every take for the window. Undone back to the first
+    edit, its other take is offered as a seed to sing again, as a take is after a restart."""
+    monkeypatch.setattr(edit_track, "RESULTS", edit_track.Results(budget=3 * TAKE_BYTES))
+    first = payload(run(stand, retakes_on(1)))
+    drawn = payload(run(stand, retakes_on(2)))
+    assert [take["sung"] for take in drawn["takes"]] == [True, True]
+    assert edit_track.RESULTS.size() == 3 * TAKE_BYTES
+    stand.calls.clear()
+    back = payload(run(stand, retakes_on(1)))
+    assert stand.calls == []
+    assert back["chosen"] == first["chosen"] == 1
+    assert [take["sung"] for take in back["takes"]] == [False, True]
+    run(stand, retakes_on(1, take=0))
+    assert stand.calls == [("retake", 192, 414, (40,))]
+
+
+def test_a_run_on_another_song_does_not_set_a_list_singing_itself_again():
+    """Another song's takes may push a list's first edit out. The run that sings it again must
+    drop the other song's takes to make room, not the edits it is about to walk to."""
+    held = edit_track.Results(budget=160)
+    for name in ("a1", "a2", "a3"):
+        held.put(name, _entry(10), keep=held.walked("a"))
+    held.settle("a", ["a1", "a2", "a3"])
+    for name in ("b1", "b2"):
+        held.put(name, _entry(10), keep=held.walked("b"))
+    held.settle("b", ["b1", "b2"])
+    assert held.get("a1") is None and held.get("a2") is not None
+    held.put("a1", _entry(10), keep=held.walked("a"))
+    assert held.get("a2") is not None and held.get("a3") is not None
+    assert held.get("b1") is None and held.size() == 160
+
+
 def test_a_words_edit_sings_the_stretch_selected_with_the_new_words(stand):
     """The cheap path: the bars say where, so nothing is heard and no other model is loaded."""
     answer = run(stand, '[{"op": "words", "bars": [4, 8], "lines": [3, 4], '
@@ -1586,6 +1648,62 @@ def test_with_its_audio_switched_off_the_node_edits_the_song_chosen_by_key(stand
     assert payload(kept)["was"] == stand.name, "a joined song, switched off, is left alone"
     with pytest.raises(ValueError, match="square beside it ticked"):
         edit_track.YuE2EditTrack().edit(None, takes=2, song_key="", use_audio=False)
+
+
+def test_a_list_made_on_another_song_is_refused_and_says_which_songs(stand, monkeypatch, torch):
+    """The same report: a list of bars laid on another song cuts and sings whatever is there.
+
+    The window names the song it made the list on; the node refuses the list on
+    any other song, naming both by length and style, since a key means nothing
+    to a person. A bare list, as every list written before, is read as before.
+    """
+    a_decoder(monkeypatch, torch)
+    other = a_song(lyrics="[Verse]\nthe one picked days before",
+                   style="folk rock with funk influences, " * 4)
+    elsewhere = songs.remember(a_wave(torch, fill=0.3), RATE, other)
+    cut = '[{"op": "cut", "bars": [2, 4]}]'
+    named = '{"song": "%s", "edits": %s}'
+    with pytest.raises(ValueError) as refused:
+        run(stand, named % (elsewhere, cut))
+    said = str(refused.value)
+    assert "made on another song" in said and "'Reset track'" in said
+    made = r", made \d{4}-\d\d-\d\d \d\d:\d\d, "
+    assert re.search(r"another song \(0:21" + made + r"'folk rock with funk influences, folk rock "
+                     r"with funk influenc\.\.\.'\) than the one it has now \(0:21" + made
+                     + r"'a style'\)", said), said
+    assert stand.calls == []
+    assert payload(run(stand, named % (stand.name, cut)))["edits"]
+    assert payload(run(stand, cut))["edits"], "a list that names no song is read as before"
+    assert payload(run(stand, named % (elsewhere, "[]")))["edits"] == "[]", "no edits, no refusal"
+    with pytest.raises(ValueError, match="does not hold a JSON list"):
+        run(stand, named % ("not a key", cut))
+    gone = "cd" * 32
+    with pytest.raises(ValueError, match="another song \\(one no longer remembered\\)"):
+        run(stand, named % (gone, cut))
+
+
+def test_a_run_on_the_joined_song_says_so_and_names_the_song_for_song_key(stand, monkeypatch,
+                                                                          torch):
+    """The window writes 'was' into 'song_key' after such a run, so switching 'audio' off stays on it.
+
+    A user's report of 2026-10-18: a song from 'Load Audio' edited, the square
+    beside 'audio' unticked, and the next run opened a song picked days before
+    in 'Saved songs...', with the new edits laid on it -- the field had been
+    written by the picker alone.
+    """
+    a_decoder(monkeypatch, torch)
+    picked = a_song(lyrics="[Verse]\nthe one picked days before")
+    songs.remember(a_wave(torch, fill=0.3), RATE, picked)
+    stale = songs.key(a_wave(torch, fill=0.3), RATE)
+    joined = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=stale))
+    assert (joined["joined"], joined["was"]) == (True, stand.name)
+    off = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=joined["was"],
+                                                  use_audio=False))
+    assert (off["joined"], off["was"]) == (False, stand.name), "switched off, the same song"
+    picked_off = payload(edit_track.YuE2EditTrack().edit(stand.audio, takes=2, song_key=stale,
+                                                         use_audio=False))
+    assert (picked_off["joined"], picked_off["was"]) == (False, stale), (
+        "the field the old window left behind opens the other song, which is what the user saw")
 
 
 def test_every_row_of_the_takes_list_has_the_same_keys(stand):
@@ -2320,3 +2438,80 @@ def test_a_song_with_no_score_is_heard_in_one_pass(torch, monkeypatch):
     drawn = payload(edit_track.YuE2EditTrack().edit({"waveform": wave, "sample_rate": RATE}, takes=2))
     assert [text for _key, text, _fill in calls] == [VERSE + "\n" + CHORUS]
     assert drawn["lines"] == [[3, 0.0, 1.4], [4, 1.5, 2.9], [7, 3.0, 3.9]]
+
+
+RESTYLE = ('[{"op": "restyle", "bars": [4, 8], "style": "hip hop, male rapper", "melody": "same",'
+           ' "octave": -1, "seed": 9, "takes": 2}]')
+"""The chorus in another style, an octave down, two takes."""
+
+
+def restyled_by_stand(torch, calls):
+    """A stand-in for the core's restyle: the song laid with itself, sung a little slower each take."""
+    from yue2_comfy.inpaint import core
+
+    def restyled(models, old, waveform, state, step, style, octave, seeds, settings, clock_of,
+                 progress=None, cancelled=None):
+        calls.append((style, octave, tuple(seeds), step.stretches, step.start, step.stop))
+        made = []
+        for index, seed in enumerate(seeds):
+            clock = grid.Grid(offset=0.6, rate=1.0 + 0.02 * index, tick=state.clock.tick,
+                              starts=state.clock.starts)
+            spans = track.restyle_spans(state, step, step.score)
+            laid = track.restyle_layout(state, step, state.sheet, clock, FRAMES + 10, spans)
+            frames = sum(stop - start for _which, start, stop in laid.pieces)
+            made.append(core.Take(seed=seed, waveform=a_wave(torch, frames, 0.1 * (index + 1)),
+                                  song=a_song(frames, score_text=RAP),
+                                  count=frames - (state.frames - step.stop) - step.start,
+                                  join=None, joins={}, ended=False, timing={}, laid=laid))
+        return made
+
+    return restyled
+
+
+def test_a_restyle_is_sung_by_the_core_and_drawn_as_takes_of_the_song_it_makes(stand, torch,
+                                                                              monkeypatch):
+    from yue2_comfy.inpaint import core
+
+    calls = []
+    monkeypatch.setattr(core, "restyled", restyled_by_stand(torch, calls))
+    monkeypatch.setattr("yue2_comfy.vocals_only.separator_weights",
+                        lambda settings, unique_id, progress: "separator.ckpt")
+    drawn = payload(run(stand, RESTYLE))
+    state = track.opened(a_song(), a_clock())
+    step = track.plan(state, track.read(RESTYLE)[0])
+    assert calls == [("hip hop, male rapper", -1, (9, 10), ((4, 8),), step.start, step.stop)]
+    assert drawn["kind"] == "restyle" and drawn["style"] == "a style"
+    assert drawn["at"] == [round(step.start * FRAME_SECONDS, 3),
+                           round(step.stop * FRAME_SECONDS, 3)]
+    assert [take["seed"] for take in drawn["takes"]] == [9, 10] and drawn["chosen"] == 0
+    first, second = drawn["takes"]
+    assert second["total"] > first["total"], "the slower take comes out longer"
+    assert drawn["before"]["index"] == -1
+    mark = songs.store().get(drawn["song"]).edit[0]
+    assert (mark["op"], mark["seed"]) == ("restyle", 9)
+    run(stand, RESTYLE)
+    assert len(calls) == 1, "the same restyle is not sung twice"
+
+
+def test_a_restyle_measures_the_song_it_sang_by_its_voice_on_the_bars_it_reached(monkeypatch):
+    """The grid of the song sung in the new style comes from its separated voice, on its score read as far as it was sung."""
+    found = []
+
+    def voice_of(audio, settings, unique_id, progress, path=None):
+        found.append((path, audio["sample_rate"]))
+        return {"waveform": "voice"}
+
+    monkeypatch.setattr("yue2_comfy.vocals_only.voice_of", voice_of)
+
+    def measured(sheet, waveform, rate, voice=None):
+        found.append((len(sheet["bars"]), voice))
+        return grid.Grid(offset=0.7, rate=1.0, tick=grid.tick_seconds(sheet),
+                         starts=grid.starts_of(sheet), by_voice=True)
+
+    monkeypatch.setattr(grid, "measured", measured)
+    clock = edit_track._measuring({}, "7", "separator.ckpt")
+    sung = a_song()
+    made = clock(sung, "sound", notation.read(RAP), 6, None)
+    assert found == [("separator.ckpt", RATE), (6, "voice")]
+    assert made.offset == 0.7 and made.starts == grid.starts_of(notation.read(RAP)), (
+        "measured on six bars, it carries the whole score's")

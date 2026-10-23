@@ -473,6 +473,29 @@ def after_move(grid: "Grid", starts, stretches, pieces) -> "Grid":
     return dataclasses.replace(grid, starts=tuple(starts), lines=tuple(placed) + (end,))
 
 
+def after_restyle(grid: "Grid", other, starts, stretches, pieces) -> "Grid":
+    """The grid of a song laid from its own frames and another song's: ``after_move`` with two sources.
+
+    ``other`` is the second of every bar line of the other song, as
+    ``Grid.bar_seconds`` gives it. ``stretches`` are ``(source, low, high)``
+    bars and ``pieces`` ``(source, start, stop)`` frames, one for each, source
+    0 being this song and 1 the other; ``starts`` are the bar starts of the
+    score they make. Every bar line goes with the piece of sound it lies in,
+    by how far that piece now starts from where it started.
+    """
+    sources = (grid.bar_seconds(), tuple(other))
+    placed = []
+    at = 0
+    end = sources[0][-1]
+    for (which, low, high), (_owner, start, stop) in zip(stretches, pieces):
+        lines = sources[which]
+        moved = (at - start) * FRAME_SECONDS
+        placed.extend(lines[bar] + moved for bar in range(low, high))
+        end = lines[high] + moved
+        at += stop - start
+    return dataclasses.replace(grid, starts=tuple(starts), lines=tuple(placed) + (end,))
+
+
 def after_cut(grid: "Grid", starts, first: int, stop: int, start: int, removed: int) -> "Grid":
     """The grid of the song a cut of bars ``first`` to ``stop`` leaves: ``removed`` frames from ``start`` are gone.
 

@@ -280,6 +280,57 @@ def _paired(labels, sections):
     return sung if len(sung) == len(labels) else None
 
 
+STRAY = ("intro", "outro", "interlude", "instrumental")
+"""Sections the model often gives a few vocal notes of its own, which a pairing by name may step over."""
+
+
+def _named_ahead(labels, sections) -> list:
+    """The score sections the first lyrics sections are sung in, by name, as far as no sung section is stepped over.
+
+    Each lyrics section takes the next score section named as its tag reads,
+    as ``_paired_ahead`` pairs them, but steps over only sections with no
+    vocal notes or the model's own playing (``STRAY``): a sung verse, chorus
+    or bridge stepped over means the score goes in another order than the
+    words from there on, and which words it sings can no longer be told.
+    """
+    found = []
+    at = 0
+    for label in labels:
+        start = at
+        while at < len(sections) and sections[at][0] != label:
+            at += 1
+        if at == len(sections) or any(sections[skipped][1] and sections[skipped][0] not in STRAY
+                                      for skipped in range(start, at)):
+            break
+        found.append(at)
+        at += 1
+    return found
+
+
+def sung_sections(lyrics: str, score: str) -> list:
+    """The score section each lyrics section with lines is sung in, by its place in the score's sections, None where that cannot be told.
+
+    The lyrics sections are counted in order, those with no lines left out,
+    and paired by name from the start of the song as long as the score
+    follows the words (``_named_ahead``). When the names do not pair them all
+    and the voice sings in exactly as many sections as the lyrics have, those
+    are paired in order, as a cut pairs them. Otherwise the sections from
+    where the order parts on are None: a model that sang a bridge where the
+    words have their third verse leaves every section before it told.
+    """
+    sheet = notation.read(score)
+    sections = _sections(score, 0, len(sheet["bars"]))
+    blocks = _blocks(lyrics)
+    labels = [phrasing.label_of(block["tag"]) if block["tag"] else "verse"
+              for block in blocks if block["lines"]]
+    found = _named_ahead(labels, sections)
+    if len(found) < len(labels):
+        sung = [index for index, section in enumerate(sections) if section[1]]
+        if len(sung) == len(labels):
+            return sung
+    return found + [None] * (len(labels) - len(found))
+
+
 def cut_words(lyrics: str, score: str, start: int, stop: int) -> Words:
     """The lyrics without the sections a cut of bars ``start`` to ``stop`` of ``score`` takes out.
 

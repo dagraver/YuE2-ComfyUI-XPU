@@ -46,7 +46,7 @@ from . import notation, songs
 from .constants import CATEGORY, DEFAULT_OPTIONS, FRAME_SECONDS, OPTIONS_TYPE
 from .edits import EDIT_TRACK_UI
 from .inpaint import grid, ops, track
-from .progress import (Band, NodeProgress, announce, interrupted, refuse,
+from .progress import (Band, NodeProgress, announce, format_duration, interrupted, refuse,
                        translate_interrupt)
 
 log = logging.getLogger(__name__)
@@ -117,7 +117,12 @@ CACHE_BYTES = 1 << 30
 
 A take is a whole song as sound, 21 MB a minute in stereo at 48 kHz, so four
 takes of an edit of a four-minute song are 340 MB. Past the budget the edit
-used longest ago goes first, and is sung again if it is asked for again."""
+used longest ago goes first, and is sung again if it is asked for again --
+but never an edit of the list a song was last run with: that list goes over
+the budget rather than sing itself again (``Results``)."""
+
+WALKED_KEEP = 16
+"""How many songs' last lists ``Results`` remembers the edits of; a list is a few names, not sound."""
 
 JOIN_SLACK = 0.75
 """How far below the song's own join a take may score before it is worth saying so.
@@ -181,6 +186,12 @@ GONE = (
     "Press 'Saved songs...' and pick another, or join the audio to 'audio'."
 )
 
+ANOTHER_SONG = (
+    "The edits on this node were made on another song ({}) than the one it has now ({}). Press "
+    "'Reset track' on the node to edit this song from the start, or join the song they were "
+    "made on to 'audio'."
+)
+
 NOT_A_KEY = (
     "The 'song_key' field does not hold a song key. It is written by 'Saved songs...' on the "
     "node and is not meant to be typed; clear it and pick a song again."
@@ -189,7 +200,8 @@ NOT_A_KEY = (
 SONG_TOOLTIP = (
     "Which remembered song to edit when nothing is joined to 'audio'. Written by the 'Saved "
     "songs...' button on the node, which shows what this install has sung and what each one "
-    "is.\n\nThe song comes back from its latents, the last stage of singing it and nothing more: "
+    "is, and by every run on a song joined to 'audio', so switching 'audio' off stays on that "
+    "song.\n\nThe song comes back from its latents, the last stage of singing it and nothing more: "
     "about a second and a half for four minutes, against minutes to sing it again. The sound it "
     "makes is the same performance but not the same file to the bit, so the song answers to "
     "that sound too. With 'Keep each song's sound beside it' switched on in the 'Saved "
@@ -205,15 +217,17 @@ AUDIO_TOOLTIP = (
     "nothing joined here the node opens the song chosen with 'Saved songs...'.\n\n"
     "An MP3 or another lossy file changes nearly every sample, and the song behind it is not "
     "found.\n\n"
-    "The square beside this input on the node switches it off: the song chosen with 'Saved "
-    "songs...' is edited instead, and whatever sings into this input is not run for this node."
+    "The square beside this input on the node switches it off: the node goes on with the song it "
+    "last edited, or one chosen with 'Saved songs...', and whatever sings into this input is not "
+    "run for this node."
 )
 
 USE_AUDIO_TOOLTIP = (
     "Whether the song joined to 'audio' is the one edited; the square beside that input on the "
-    "node is this switch. Switched off, the node edits the song chosen with 'Saved songs...' and "
-    "leaves the link where it is -- and the node above is not run for it at all, so a song sung "
-    "before a restart is not sung again to edit one bar of it.\n\n"
+    "node is this switch. Switched off, the node goes on with the song it last edited, or one "
+    "chosen with 'Saved songs...' since, and leaves the link where it is -- and the node above "
+    "is not run for it at all, so a song sung before a restart is not sung again to edit one "
+    "bar of it. Opening a song with 'Saved songs...' switches it off.\n\n"
     "A run of the whole workflow still runs every node that something else needs, such as a "
     "'Save Audio' joined to the same song."
 )
@@ -238,7 +252,8 @@ TAKES_TOOLTIP = (
 EDITS_TOOLTIP = (
     "The edits to make, as a JSON list, written by the track window. Empty means no edits: the "
     "node hands the song on as it is and draws the track.\n\n"
-    "Each edit is {'op': 'retake', 'cut', 'words', 'notes', 'extend' or 'move'} with either "
+    "Each edit is {'op': 'retake', 'cut', 'words', 'notes', 'extend', 'move', 'break' or "
+    "'restyle'} with either "
     "'bars': [first, stop] counting "
     "from 0, the second bar not included, or 'seconds': [from, to] for a song sung with cot "
     "'off', which has no score. A retake also takes a 'seed', how many 'takes' to sing, and "
@@ -250,7 +265,12 @@ EDITS_TOOLTIP = (
     "song that goes on, 'extend', takes a seed and takes, and the 'text' it goes on with, empty "
     "for a new ending alone; it selects no bars, going on from where the singing ends. A 'move' "
     "takes the bars of whole sections and 'to', the bar line they go to: where another section "
-    "starts, or the number of bars for the end."
+    "starts, or the number of bars for the end. A 'break' takes 'to', the bar line it goes "
+    "before, and its 'length' in bars. A 'restyle' takes a seed and takes, the 'style' its bars "
+    "are sung in, 'melody' 'same' or 'new' (whole sections), 'octave' -1, 0 or 1, and 'also', "
+    "more bars sung in the same take.\n\n"
+    "The window writes the list as {'song': key, 'edits': [...]}, and a list made on another "
+    "song is refused."
 )
 
 OPTIONS_TOOLTIP = (
@@ -262,9 +282,9 @@ OPTIONS_TOOLTIP = (
 DESCRIPTION = (
     "Changes part of a finished song and hands back the whole song; everything outside the "
     "edit stays as it was.\n\n"
-    "Open 'Edit track...', select a stretch and press Retake, Cut, Notes..., Go on... or "
-    "Break...; click a line of the words to sing it with other words, or drag a section to "
-    "move it. Works on songs this pack has sung.\n\n"
+    "Open 'Edit track...', select a stretch and press Retake, Cut, Notes..., Go on..., "
+    "Break... or Style...; click a line of the words to sing it with other words, or drag a "
+    "section to move it. Works on songs this pack has sung.\n\n"
     "Hearing the words takes Qwen3-ASR and its word aligner, and finding the bars takes the "
     "voice separator; each is downloaded the first time it is needed."
 )
@@ -888,13 +908,30 @@ def _held_bytes(entry) -> int:
 
 
 class Results:
-    """The takes of every edit sung in this session, the ones used longest ago dropped first."""
+    """The takes of every edit sung in this session, the ones used longest ago dropped first.
+
+    A run walks its list from the first edit, so an edit of the list a song
+    was last run with is never dropped to make room: under plain
+    least-recently-used a list whose takes outgrew the budget dropped its
+    first edit for its last, the next run sang the first again and dropped the
+    second for it, and so on down the list -- every run sang every edit
+    (issue #13). A run holds what its song's last list walked and what it has
+    walked itself (``walked``, ``put``), and once it is through (``settle``)
+    the rest goes oldest first. If that is still past the budget, the edits
+    before the last keep only the take that was kept: the others were there
+    to compare, and comparing is over once another edit stands on that one.
+    Their seeds are written down, so a run does not sing them again for a
+    pick already made, and the window offers them as it offers the takes
+    left after a restart. Past that the list holds every kept take over the
+    budget, which a run singing all of it again would cost more than.
+    """
 
     def __init__(self, budget: int = CACHE_BYTES):
         self._held = collections.OrderedDict()
         self._sizes = {}
         self._budget = int(budget)
         self._bytes = 0
+        self._walked = collections.OrderedDict()
 
     def get(self, name: str):
         found = self._held.get(name)
@@ -902,22 +939,63 @@ class Results:
             self._held.move_to_end(name)
         return found
 
-    def put(self, name: str, entry) -> None:
-        """Hold ``entry`` under ``name``, measured now: an entry grown in place is measured again here."""
+    def put(self, name: str, entry, keep=()) -> None:
+        """Hold ``entry`` under ``name``, measured now, dropping the oldest entries not named in ``keep``.
+
+        An entry grown in place is measured again here.
+        """
         if name in self._held:
             self._held.pop(name)
             self._bytes -= self._sizes.pop(name)
         self._held[name] = entry
         self._sizes[name] = _held_bytes(entry)
         self._bytes += self._sizes[name]
-        while self._bytes > self._budget and len(self._held) > 1:
-            oldest, _gone = self._held.popitem(last=False)
-            self._bytes -= self._sizes.pop(oldest)
+        self._fit(set(keep) | {name})
+
+    def walked(self, song: str) -> frozenset:
+        """The names of the edits the last run on ``song`` walked through: what a run on it must not drop."""
+        return frozenset(self._walked.get(song, ()))
+
+    def settle(self, song: str, names) -> None:
+        """Write down the list a run on ``song`` walked, ``names`` in order, and fit the rest around it."""
+        names = list(names)
+        self._walked.pop(song, None)
+        self._walked[song] = tuple(names)
+        while len(self._walked) > WALKED_KEEP:
+            self._walked.popitem(last=False)
+        self._fit(set(names))
+        for name in names[:-1]:
+            if self._bytes <= self._budget:
+                break
+            self._trim(name)
+
+    def _fit(self, keep) -> None:
+        for name in [name for name in self._held if name not in keep]:
+            if self._bytes <= self._budget:
+                break
+            self._held.pop(name)
+            self._bytes -= self._sizes.pop(name)
+
+    def _trim(self, name: str) -> None:
+        """Let go of every take of one edit but the one kept, writing their seeds down as dropped."""
+        entry = self._held.get(name)
+        if entry is None or entry.get("kept") not in entry["takes"]:
+            return
+        others = [seed for seed in entry["takes"] if seed != entry["kept"]]
+        if not others:
+            return
+        for seed in others:
+            del entry["takes"][seed]
+        entry["dropped"] = set(entry.get("dropped", ())) | set(others)
+        self._bytes -= self._sizes[name]
+        self._sizes[name] = _held_bytes(entry)
+        self._bytes += self._sizes[name]
 
     def clear(self) -> None:
         self._held.clear()
         self._sizes.clear()
         self._bytes = 0
+        self._walked.clear()
 
     def size(self) -> int:
         return self._bytes
@@ -1004,6 +1082,35 @@ def _grid_of(name: str, song, waveform, rate: int, settings, unique_id, progress
     _grid_keep(name, clock)
     while len(_GRIDS) > _GRID_KEEP:
         _GRIDS.popitem(last=False)
+    return clock
+
+
+def _measuring(settings, unique_id, path):
+    """How a restyle finds the bars of a song it sang in the new style: ``clock(song, waveform, sheet, bars, progress)``.
+
+    As a song's own grid is found (``_grid_of``): by its separated voice,
+    with the separator's weights at ``path``. The song is sung only a little
+    past the bars it is for, so its score is read as far as ``bars`` for the
+    measuring and the grid then carries the whole score's bar starts. Nothing
+    is kept: each take is a song of its own.
+    """
+    import dataclasses
+
+    from .vocals_only import voice_of
+
+    def clock(song, waveform, sheet, bars, progress):
+        rate = int(song.sample_rate)
+        heard = sheet if bars >= len(sheet["bars"]) else notation.read(notation.head(song.score,
+                                                                                     bars))
+        voice = voice_of({"waveform": waveform, "sample_rate": rate}, settings, unique_id, progress,
+                         path=path)["waveform"]
+        began = time.perf_counter()
+        found = grid.measured(heard, waveform, rate, voice=voice)
+        log.info("[yue2_comfy.edit_track] the song sung in the new style follows its score from "
+                 "%.2f s at %.4f of its tempo, placed by %s, in %.1f s", found.offset, found.rate,
+                 "the voice" if found.by_voice else "the mix", time.perf_counter() - began)
+        return dataclasses.replace(found, starts=grid.starts_of(sheet))
+
     return clock
 
 
@@ -1375,7 +1482,7 @@ def _after(prior, step, take):
     try:
         return track.after(prior, step, take.count,
                            take.song.score if step.kind in track.WRITTEN else None,
-                           getattr(take, "sung", ()))
+                           getattr(take, "sung", ()), getattr(take, "laid", None))
     except Exception:
         log.debug("[yue2_comfy.edit_track] the bars of a take could not be worked out, so it is "
                   "heard whole", exc_info=True)
@@ -1423,7 +1530,7 @@ def _take_facts(take, index: int, chosen: int, name: str, rate: int, prior, step
     drawn = _wave(take.waveform)
     own = track.after(prior, step, take.count,
                       take.song.score if step.kind in track.WRITTEN else None,
-                      getattr(take, "sung", ()))
+                      getattr(take, "sung", ()), getattr(take, "laid", None))
     laid = None
     if own.sheet is not None and own.clock is not None:
         laid = grid.layout(own.sheet, own.clock, own.frames)
@@ -1657,6 +1764,34 @@ def _also(waveform, song, name: str) -> None:
                     exc_info=True)
 
 
+SAID_STYLE = 60
+"""How much of a song's style a refusal quotes to say which song it means."""
+
+
+def _song_said(name: str, song=None) -> str:
+    """A song as a person knows it in a refusal: its length, when it was made, and the start of its style.
+
+    The key means nothing to anybody. The songs of one evening often share
+    a style word for word, and two of them measured on 2026-10-18 were 3:43
+    and 3:44 long, so the time each was made is what tells them apart, as
+    it is in 'Saved songs...'. A song no longer remembered says so.
+    """
+    if song is None:
+        try:
+            song = songs.store().get(name)
+        except ValueError:
+            song = None
+    if song is None:
+        return "one no longer remembered"
+    style = " ".join(str(song.style or "").split())
+    if len(style) > SAID_STYLE:
+        style = style[:SAID_STYLE].rstrip() + "..."
+    made = (", made " + time.strftime("%Y-%m-%d %H:%M", time.localtime(song.created))
+            if song.created else "")
+    return "{}{}, '{}'".format(format_duration(song.frames * FRAME_SECONDS), made,
+                               style or "no style given")
+
+
 class YuE2EditTrack:
     """A song in, the same song with part of it sung again or taken out."""
 
@@ -1706,6 +1841,9 @@ class YuE2EditTrack:
         has no graph above it yet -- a workflow opened after a restart, where
         singing the song again to edit a bar of it costs minutes. With
         'use_audio' off the link is left alone and the field decides.
+
+        A list that names the song it was made on (``track.song_of``) is
+        refused on any other: its bars belong to that song.
         """
         from .inpaint import core
         from .staged import adapters, session
@@ -1735,6 +1873,14 @@ class YuE2EditTrack:
             wanted = track.read(edits, int(takes))
         except ValueError as error:
             refuse(unique_id, str(error))
+        made_on = track.song_of(edits)
+        if wanted and made_on:
+            try:
+                made_on = songs.canonical(made_on)
+            except ValueError:
+                refuse(unique_id, track.NOT_A_LIST)
+            if made_on != name:
+                refuse(unique_id, ANOTHER_SONG.format(_song_said(made_on), _song_said(name, song)))
         settings = _settings(song, options, unique_id)
         adapters(settings, unique_id)
         sheet = notation.read(song.score) if song.score else None
@@ -1769,7 +1915,7 @@ class YuE2EditTrack:
         history, notices, picks, shown, marks = [], [], [], None, []
         clock, state, current, sound = None, None, song, waveform
         keyed, timed, ears, place = name, {}, None, None
-        went = {}
+        went, walked, held = {}, [], RESULTS.walked(name)
         try:
             with stack:
                 stack.callback(_ears_off, settings, listened)
@@ -1823,10 +1969,11 @@ class YuE2EditTrack:
                         raise _Refused("Edit {}: {}".format(index + 1, error))
                     notices.extend(step.notices)
                     made = track.name(name, history, edit)
+                    walked.append(made)
                     asked = ""
                     if step.kind in ("words", "extend"):
                         asked = chr(10).join(step.now)
-                    elif step.kind in ("retake", "notes") and ears is not None:
+                    elif step.kind in ("retake", "notes", "restyle") and ears is not None:
                         found_by = opens + (closes - opens) * TIMES_SHARE
                         asked = self._words_there(place, state, step, sound, rate, name, history,
                                                   Band(progress, opens, found_by), listened, went,
@@ -1834,22 +1981,24 @@ class YuE2EditTrack:
                         opens = found_by
                     hears = closes - (closes - opens) * HEARD_SHARE if asked else closes
                     entry = self._sung(loaded, current, sound, state, step, edit, made,
-                                       settings, Band(progress, opens, hears))
+                                       settings, Band(progress, opens, hears), unique_id,
+                                       held | set(walked))
                     seeds = (0,) if _one_take(step) else edit.seeds()
                     if asked:
                         self._heard(entry, seeds, step, sound, rate, settings, made, released,
                                     Band(progress, hears, closes), notices, listened, asked,
-                                    ears if step.kind in ("retake", "notes") else None)
+                                    ears if step.kind in ("retake", "notes", "restyle") else None)
                     ordered = [entry["takes"].get(seed) for seed in seeds]
                     pick = edit.take if edit.take is not None else core.best(ordered)
                     kept = ordered[pick]
+                    entry["kept"] = kept.seed
                     history.append((edit, kept.seed))
                     picks.append(pick)
                     prior, earlier = state, sound
                     edge = _edge(step, state.frames)
                     state = track.after(state, step, kept.count,
                                         kept.song.score if step.kind in track.WRITTEN else None,
-                                        getattr(kept, "sung", ()))
+                                        getattr(kept, "sung", ()), getattr(kept, "laid", None))
                     current, sound = kept.song, kept.waveform
                     if edge and edit.fade:
                         sound = _faded(sound, edit.fade, edge == "head", rate)
@@ -1886,6 +2035,8 @@ class YuE2EditTrack:
                                     dict(before, pieces=[(0.0, at), (at, prior.frames * FRAME_SECONDS)],
                                          sung=[(at, at, take.count * FRAME_SECONDS)]))
                         notices.extend(_break_notices(ordered, pick))
+                if walked:
+                    RESULTS.settle(name, walked)
                 released()
                 if wanted:
                     keyed = _remember(sound, _stamped(current, sound, name, song, marks))
@@ -1903,7 +2054,8 @@ class YuE2EditTrack:
             refuse(unique_id, str(stop))
 
         payload = self._payload(name, keyed, sound, rate, state, wanted, picks, shown,
-                                settings, timed, ears is not None and place is not None)
+                                settings, timed, ears is not None and place is not None, given,
+                                current.style)
         if shown is not None and _flagged(shown[1][shown[2]]):
             kept = shown[1][shown[2]]
             notices.append(("warn", "The join of the take kept scores {:.2f} where the song's own "
@@ -2067,7 +2219,7 @@ class YuE2EditTrack:
             return
         entry["said"] = answers[0]["text"]
         entry["asked"] = asked
-        if step.kind in ("retake", "notes"):
+        if step.kind in ("retake", "notes", "restyle"):
             entry["was_heard"] = lines.heard(asked, answers[0]["text"])
             log.info("[yue2_comfy.edit_track] the song as it was is heard singing %d of the %d "
                      "words there: %s", entry["was_heard"][0], entry["was_heard"][1],
@@ -2266,7 +2418,8 @@ class YuE2EditTrack:
             _times_keep(disk, text, times, since, sections)
         return times
 
-    def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band):
+    def _sung(self, loaded, song, waveform, state, step, edit, name, settings, band,
+              unique_id=None, keep=()):
         """The takes of one edit: the ones already sung under this name, and the ones still missing.
 
         Only the takes the result needs are sung. An edit that already says
@@ -2277,7 +2430,10 @@ class YuE2EditTrack:
         this session's memory and a restart empties it. Their seeds are
         counted on from the edit's own, so any of them can be sung later and
         comes out the same take; the window offers them. An edit with nothing
-        kept yet sings all of them, because the pick is made among them.
+        kept yet sings all of them, because the pick is made among them --
+        all but the ones let go of to make room after the pick was made
+        (``Results``), which the pick never needs again. ``keep`` names what
+        the cache must not drop for these takes.
         """
         from .inpaint import core, ops
 
@@ -2286,7 +2442,10 @@ class YuE2EditTrack:
         seeds = (0,) if _one_take(step) else edit.seeds()
         if not _one_take(step) and edit.take is not None:
             seeds = (seeds[edit.take],)
-        missing = [seed for seed in seeds if seed not in entry["takes"]]
+        dropped = ()
+        if edit.take is None and entry.get("kept") in seeds:
+            dropped = entry.get("dropped", ())
+        missing = [seed for seed in seeds if seed not in entry["takes"] and seed not in dropped]
         if not missing:
             band.ratio(1.0)
             return entry
@@ -2304,6 +2463,15 @@ class YuE2EditTrack:
                                       missing, settings,
                                       lambda sheet: track.extension_frames(state, step, sheet),
                                       band, interrupted)
+                for take in fresh:
+                    entry["takes"][take.seed] = take
+            elif step.kind == "restyle":
+                from .vocals_only import separator_weights
+
+                path = separator_weights(settings, unique_id, band)
+                fresh = core.restyled(loaded(), song, waveform, state, step, edit.style,
+                                      edit.octave, missing, settings,
+                                      _measuring(settings, unique_id, path), band, interrupted)
                 for take in fresh:
                     entry["takes"][take.seed] = take
             elif step.kind == "break":
@@ -2332,18 +2500,26 @@ class YuE2EditTrack:
                     take.natural = entry["natural"]
         except ValueError as error:
             raise _Refused(str(error))
-        RESULTS.put(name, entry)
+        if entry.get("dropped"):
+            entry["dropped"] = set(entry["dropped"]) - set(entry["takes"])
+        RESULTS.put(name, entry, keep)
         return entry
 
     def _payload(self, name: str, keyed: str, sound, rate: int, state, wanted, picks,
-                 shown, settings, timed=None, hears=False) -> dict:
+                 shown, settings, timed=None, hears=False, joined=False, style="") -> dict:
         """Everything the track window draws.
 
         ``song`` is the key the result is remembered under, empty when it could
         not be remembered; a run with no edits hands back the song it opened,
         so that key is the one it came in under. ``was`` is the key of the
         song that came in, which is the song's own even when the run was
-        handed one of its other names.
+        handed one of its other names. ``joined`` says it came in through
+        'audio' rather than by 'song_key', and then the window writes ``was``
+        into 'song_key': the list of edits is a list on that song, so with the
+        input switched off the next run goes on with it. Until 2026-10-18 the
+        field was written only by 'Saved songs...', and a user who edited a
+        song from 'Load Audio' and then switched the input off was handed a
+        song picked days before, with their edits laid on it.
         ``seconds`` is the length of the result; ``peaks`` and ``rms`` its wave,
         at most ``PEAKS`` values from 0 to 1 each; ``grid`` is ``grid.layout`` of the score on
         the result, None for a song without one, and ``score`` that score's text, which the
@@ -2383,7 +2559,8 @@ class YuE2EditTrack:
 
         timed = timed or {}
         drawn = _wave(sound)
-        payload = {"song": keyed, "was": name, "sung": _sampled(settings), "hears": bool(hears),
+        payload = {"song": keyed, "was": name, "joined": bool(joined), "style": style or "",
+                   "sung": _sampled(settings), "hears": bool(hears),
                    "seconds": round(state.frames * FRAME_SECONDS, 3), "sample_rate": rate,
                    "peaks": drawn["peaks"], "rms": drawn["rms"], "grid": None,
                    "score": state.score or "", "lyrics": state.lyrics, "lines": timed.get("song"), "takes": [],

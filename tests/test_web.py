@@ -1481,6 +1481,28 @@ EDIT_LISTS = [
     '[{"op": "break", "to": 13, "at": "2"}]',
     '[{"op": "break", "to": 13, "at": true}]',
     '[{"op": "retake", "bars": [1, 2], "length": 4}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "hip hop", "seed": 5, "takes": 2, "take": 1}]',
+    '[{"op": "restyle", "bars": [4, 8], "also": [[12, 16]], "style": " rap \\u3000",'
+    ' "melody": "new", "octave": -1, "vary": 1.5}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "melody": null, "octave": null,'
+    ' "also": null}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": 1.0}]',
+    '[{"op": "restyle", "bars": [4, 8]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": " \\u001c "}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": 5}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "' + "x" * 1001 + '"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "' + "\\u0431" * 1000 + '"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "melody": "rap"}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": 2}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "octave": true}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[6, 10]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8, 12], [1, 3]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8, 8]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": [[8.5, 9]]}]',
+    '[{"op": "restyle", "bars": [4, 8], "style": "x", "also": "8-12"}]',
+    '[{"op": "restyle", "seconds": [1.0, 2.0], "style": "x"}]',
+    '[{"op": "restyle", "style": "x"}]',
     '["retake"]',
     "[null]",
 ]
@@ -1505,13 +1527,17 @@ def run_edits(script: str):
 
 
 def spelled(edit):
-    """One of the node's edits in the shape the window holds it in."""
-    return {"op": edit.op, "bars": None if edit.bars is None else list(edit.bars),
-            "seconds": None if edit.seconds is None else list(edit.seconds),
-            "seed": edit.seed, "takes": edit.takes, "take": edit.take,
-            "vary": edit.vary, "guide": edit.guide, "fade": edit.fade,
-            "lines": None if edit.lines is None else list(edit.lines), "text": edit.text,
-            "score": edit.score, "to": edit.to, "length": edit.length, "at": edit.at}
+    """One of the node's edits in the shape the window holds it in; a restyle's own fields only on a restyle."""
+    shape = {"op": edit.op, "bars": None if edit.bars is None else list(edit.bars),
+             "seconds": None if edit.seconds is None else list(edit.seconds),
+             "seed": edit.seed, "takes": edit.takes, "take": edit.take,
+             "vary": edit.vary, "guide": edit.guide, "fade": edit.fade,
+             "lines": None if edit.lines is None else list(edit.lines), "text": edit.text,
+             "score": edit.score, "to": edit.to, "length": edit.length, "at": edit.at}
+    if edit.op == "restyle":
+        shape.update(style=edit.style, melody=edit.melody, octave=edit.octave,
+                     also=[list(stretch) for stretch in edit.also])
+    return shape
 
 
 @needs_node
@@ -1568,6 +1594,43 @@ def test_what_the_window_writes_is_what_the_node_sings():
     assert json.loads(track.written(edits)) == json.loads(written[0])
     assert len(track.read(written[1], 1)) == 2
     assert track.read(written[2], 1)[0].take is None, "a take kept that is no longer sung"
+
+
+RESTYLE_GRID = {
+    "bars": [2.0 * bar for bar in range(17)],
+    "sections": [{"name": "verse", "bar": 0, "bars": 4, "start": 0.0, "end": 8.0},
+                 {"name": "Chorus", "bar": 4, "bars": 4, "start": 8.0, "end": 16.0},
+                 {"name": "verse", "bar": 8, "bars": 4, "start": 16.0, "end": 24.0},
+                 {"name": "chorus", "bar": 12, "bars": 4, "start": 24.0, "end": 32.0}],
+}
+"""Two choruses, their names written two ways: the window takes them for one name, as the node does."""
+
+
+@needs_node
+def test_a_restyle_the_window_writes_is_the_one_the_node_sings():
+    from yue2_comfy.inpaint import track
+
+    made = run_edits("""
+        const grid = %s;
+        const chosen = e.selectBars(grid, 4, 8);
+        const also = e.sameSections(grid, chosen);
+        const edit = e.restyleFor(chosen, also, "  hip hop  ", "new", -1, 2, 77, { vary: 1.5 });
+        console.log(JSON.stringify([e.writeEdits([edit]), also,
+            e.sameSections(grid, e.selectBars(grid, 4, 7)),
+            e.sameSections(grid, e.selectBars(grid, 0, 8)), e.describeEdit(edit, 0),
+            e.describeEdit(e.restyleFor(chosen, [], "folk", "same", 0, 1, 5), 1)]));
+    """ % json.dumps(RESTYLE_GRID))
+    written, also, part, two, said, plain = made
+    assert also == [[12, 16]], "the other chorus"
+    assert part == [] and two == [], "only a whole section of one name has others like it"
+    edit, = track.read(written)
+    assert (edit.bars, edit.also, edit.style, edit.melody, edit.octave) == (
+        (4, 8), ((12, 16),), "hip hop", "new", -1)
+    assert (edit.seed, edit.takes, edit.vary) == (77, 2, 1.5)
+    assert json.loads(track.written([edit])) == json.loads(written)
+    assert said == ('1. Style "hip hop" in bars 5-8 and bars 13-16, a new melody, an octave down, '
+                    'variety 1.50')
+    assert plain == '2. Style "folk" in bars 5-8'
 
 
 @needs_node
@@ -2109,22 +2172,36 @@ def test_the_picker_will_not_hand_over_a_song_the_node_would_refuse():
     assert rows.count("yue2-s-barred") == 2, "and it is dimmed wherever it shows"
 
 
-def test_a_song_joined_to_the_node_leaves_the_list_to_read_and_not_to_open():
-    """The link wins over the field, so opening one here would move nothing but the field."""
+def test_a_song_opened_on_a_node_with_audio_joined_switches_audio_off():
+    """The link wins over the field, so opening a song here unticks the square first.
+
+    The same user's report of 2026-10-18: the button was greyed out while a
+    song was joined, and the only word why was its tooltip, in English. Now it
+    says what it does -- 'Switch 'audio' off and open' -- and does it. Saying
+    no to the question about the edits leaves the square as it was, and
+    opening the song the node is on already only switches it off.
+    """
     source = SONGS.read_text(encoding="utf-8")
     able = source[source.index("    function openable(row) {"):source.index("    function take()")]
-    assert "!joined" in able, "a second click on a row opens nothing either, take() asking this"
+    assert "joined" not in able, "a song joined to the node no longer stops a song opening"
     every = [line.strip() for line in source.splitlines() if "open.disabled" in line]
     assert every and all("openable(" in line or line == "open.disabled = true;" for line in every), (
         "every place that turns the button back on asks the same question: two of them did not, "
-        "and the button came up live on a node with a link in it")
+        "and the button came up live on a voice-only song")
+    assert 'const open = element("button", "yue2-go", joined ? OPEN_JOINED : OPEN);' in source
+    assert "if (joined) open.title = JOINED;" in source, "the button says what happens to the link"
     assert 'let mine = joined ? "" : (chosen || "");' in source, (
         "and no row says it is the one on the node while the link is what the node is on")
-    assert "if (joined) open.title = JOINED;" in source, "the button says why it is off"
-    assert "labelled and deleted from here" in source, (
-        "the rest of the list is what the picker is for as well, so it is not taken away")
-    assert "this.songsButton.disabled = busy;" in TRACK.read_text(encoding="utf-8"), (
-        "which is why the button that opens it stays where it is")
+    track = TRACK.read_text(encoding="utf-8")
+    choose = track[track.index("function chooseSong(node) {"):track.index("function runAlone(")]
+    off = "if (audioJoined(node)) setWidgetValue(node, USE_AUDIO, false);"
+    assert choose.index("await confirmed(") < choose.index(off) < choose.index(
+        "setWidgetValue(node, SONG, row.key);"), (
+        "the square goes off after the edits are given up and before the song is written")
+    same = choose[:choose.index("const { edits } = nodeList(node);")]
+    assert "if (audioJoined(node)) toggleAudio(node);" in same, (
+        "the song already on the node keeps its edits and only loses the link")
+    assert "this.songsButton.disabled = busy;" in track, "the button that opens it stays where it is"
 
 
 def test_the_edits_of_a_song_fold_under_the_song_they_were_made_from():
@@ -2300,7 +2377,8 @@ def test_choosing_another_saved_song_clears_the_track_it_replaces():
     """The edits are bars of the song that was open; on another song they mean somewhere else."""
     source = TRACK.read_text(encoding="utf-8")
     choose = source[source.index("function chooseSong(node) {"):source.index("function nodeText(")]
-    assert "if (row.key === nodeSong(node)) return;" in choose, "picking the same song changes nothing"
+    same = "if (row.key === nodeSong(node)) {\n            if (audioJoined(node)) toggleAudio(node);\n            return;"
+    assert same in choose, "picking the same song changes nothing but the link"
     assert "await confirmed(" in choose, "edits are not thrown away silently"
     assert "writeList(node, []);" in choose
     assert "node.__yue2TrackDrawn = null;" in choose, "the old song's takes must not stay on screen"
@@ -2365,7 +2443,7 @@ def test_the_picker_tells_a_change_of_words_from_a_retake():
     what = source[source.index("function what(row) {"):source.index("function swapSaid(")]
     assert 'mark.op === "words" ? "new words " : mark.op === "notes" ? "new notes "' in what
     assert 'mark.op === "extend" ? "went on " : mark.op === "move" ? "moved "' in what
-    assert 'mark.op === "break" ? "break " : "retake "' in what
+    assert 'mark.op === "break" ? "break " : mark.op === "restyle" ? "style " : "retake "' in what
     mark = source[source.index("function badges(row, chosen) {"):source.index("function matches(")]
     assert '(mark.op === "words" || mark.op === "extend") && (mark.was || mark.now)' in mark
     assert "NEW_WORDS" in mark and "swapSaid" in mark, (
@@ -2440,7 +2518,7 @@ def test_a_change_of_words_offers_its_takes_as_a_retake_does():
     side, none kept but the join's, and More takes was not there. A change of notes has takes too."""
     source = TRACK.read_text(encoding="utf-8")
     assert ('return op === "retake" || op === "words" || op === "notes" || op === "extend" '
-            '|| op === "break";' in source)
+            '|| op === "break"\n        || op === "restyle";' in source)
     assert source.count('op === "retake"') == 1
     for pattern in ('op !== "retake"', 'kind === "retake"', 'kind !== "retake"'):
         assert pattern not in source, pattern
@@ -2512,6 +2590,63 @@ def test_the_audio_input_is_switched_off_by_a_square_beside_it():
     assert "setWidgetValue(node, USE_AUDIO" in toggled, "written so a saved workflow keeps it"
 
 
+def test_a_run_on_the_joined_song_leaves_its_key_in_song_key():
+    """Switching 'audio' off goes on with the song the node last edited, not one picked days before.
+
+    A user's report of 2026-10-18: 'Load Audio' into the node, an edit, the
+    square unticked, Render -- and the window drew another song, with the edit
+    laid on it, because 'song_key' was written by the picker alone. Now the
+    node says the song came in through 'audio' and the window writes its key,
+    through setWidgetValue so a reload keeps it. A song picked while that run
+    was out is not overwritten when it comes back, unless the square is ticked
+    again by then, when the joined song is what the node is on anyway.
+    """
+    source = TRACK.read_text(encoding="utf-8")
+    hooks = source[source.index("nodeType.prototype.onExecuted = function (message) {"):]
+    hooks = hooks[:hooks.index("\n        };\n")]
+    wrote = ("if (drawn.joined && typeof drawn.was === \"string\" && drawn.was\n"
+             "                    && (audioOn(this) || !this.__yue2SongChosen)) {\n"
+             "                    setWidgetValue(this, SONG, drawn.was);")
+    assert wrote in hooks
+    assert hooks.index(wrote) < hooks.index("this.__yue2SongChosen = false;") < hooks.index(
+        "this.__yue2TrackDrawn = drawn;")
+    chose = source[source.index("function chooseSong(node) {"):source.index("function runAlone(")]
+    assert "setWidgetValue(node, SONG, row.key);\n        node.__yue2SongChosen = true;" in chose
+    assert source.count("setWidgetValue(this, SONG") + source.count("setWidgetValue(node, SONG") == 3, (
+        "the pick, the pick deleted, and a run on the joined song")
+
+
+@needs_node
+def test_the_list_the_window_writes_names_its_song_as_the_node_reads_it():
+    """The node refuses a list made on another song; the window says which song it made it on.
+
+    Every write of the list goes through writeList, which names the song the
+    drawn track is ('was'), or keeps the name the list already has when
+    nothing is drawn yet, as after a reload. An empty list names nothing.
+    """
+    from yue2_comfy.inpaint import track
+
+    key = "ab" * 32
+    got = run_edits("""
+        const cut =[{op: "cut", bars: [2, 4], seconds: null, seed: 0, takes: 1, take: null,
+                      vary: null, guide: null, fade: null, lines: null, text: null, score: null}];
+        const named = e.writeEdits(cut, "%s");
+        console.log(JSON.stringify({named, bare: e.writeEdits(cut), back: e.readEdits(named, 2),
+            old: e.readEdits(e.writeEdits(cut), 2).song,
+            bad: e.readEdits('{"song": 5, "edits": []}').error}));
+    """ % key)
+    assert track.song_of(got["named"]) == key and track.read(got["named"]) == track.read(got["bare"])
+    assert track.song_of(got["bare"]) == ""
+    assert got["back"]["song"] == key and got["back"]["edits"][0]["op"] == "cut"
+    assert got["old"] == "" and got["bad"]
+    source = TRACK.read_text(encoding="utf-8")
+    assert source.count("setWidgetValue(node, EDITS") == 1
+    assert "list.writeEdits(edits, listSong(node))" in source
+    song = source[source.index("function listSong(node) {"):]
+    song = song[:song.index("\n}\n")]
+    assert "node.__yue2TrackDrawn?.was" in song and "nodeList(node).song" in song
+
+
 
 @needs_node
 def test_a_section_is_dropped_on_the_section_line_nearest_the_pointer():
@@ -2570,6 +2705,55 @@ def test_the_break_the_window_writes_is_the_break_the_node_plays():
 def test_a_break_goes_before_a_section_after_the_first_and_before_the_end():
     got = run_edits("console.log(JSON.stringify(e.breakLines({})));".format(json.dumps(TRACK_GRID)))
     assert got == [2], "the chorus is the one section a break can go before on that grid"
+
+
+@needs_node
+def test_a_break_names_both_sections_and_a_selected_section_gets_it_after_it():
+    """A user's ask of 2026-10-18: a break 'after every verse or chorus' came out 'at random'.
+
+    The window put the break before the section selected, while a person who
+    selects a verse means after it, and its list named one section only. Now
+    every place names both sections, and a selection gets the break at its end:
+    on that section line when it ends on one, else on the line nearest its end.
+    With nothing selected it still goes before the first chorus.
+    """
+    grid = dict(TRACK_GRID, sections=[
+        {"name": "verse", "bar": 0, "bars": 2, "start": 0.5, "end": 4.5, "sung": 0.2},
+        {"name": "chorus", "bar": 2, "bars": 1, "start": 4.5, "end": 6.5, "sung": 4.1},
+        {"name": "bridge", "bar": 3, "bars": 2, "start": 6.5, "end": 10.5, "sung": 6.4}])
+    got = run_edits("""
+        const grid = {grid};
+        console.log(JSON.stringify({{
+            lines: e.breakLines(grid),
+            named: e.breakLines(grid).map((bar) => e.breakBetween(grid, bar)),
+            short: e.breakLines(grid).map((bar) => e.breakPair(grid, bar)),
+            verse: e.breakLineFor(grid, e.selectBars(grid, 0, 2)),
+            chorus: e.breakLineFor(grid, e.selectBars(grid, 2, 3)),
+            last: e.breakLineFor(grid, e.selectBars(grid, 3, 5)),
+            inside: e.breakLineFor(grid, e.selectBars(grid, 0, 1)),
+            seconds: e.breakLineFor(grid, e.selectSeconds(1.0, 6.0)),
+            none: e.breakLineFor(grid, null),
+            bare: e.breakLineFor({{bars: [0, 1]}}, null),
+        }}));
+    """.format(grid=json.dumps(grid)))
+    assert got["lines"] == [2, 3]
+    assert got["named"] == ["after the verse, before the chorus", "after the chorus, before the bridge"]
+    assert got["short"] == ["verse \u2192 chorus", "chorus \u2192 bridge"], (
+        "the list itself sits in the narrow words column, so it says it with an arrow")
+    assert (got["verse"], got["chorus"]) == (2, 3), "a selected section gets the break after it"
+    assert got["last"] == 3, "nothing comes after the last section, so the nearest line it has"
+    assert (got["inside"], got["seconds"]) == (2, 3), "any other stretch: the line nearest its end"
+    assert (got["none"], got["bare"]) == (2, None), "nothing selected: before the first chorus"
+    source = TRACK.read_text(encoding="utf-8")
+    assert "return list.breakLineFor(this.grid(), this.selection);" in source
+    box = source[source.index("    breakBox() {"):source.index("    paintBreakFact() {")]
+    fact = source[source.index("    breakFact("):source.index("    breakPlaces(to) {")]
+    assert "list.breakPair(grid, bar)" in box and "list.breakBetween(grid, to)" in fact, (
+        "the list and the line under it say the same two sections")
+    assert 'option.title = list.breakBetween(grid, bar) + ", bar " + (bar + 1);' in box, (
+        "and the option says it in words, with the bar the list has no room for")
+    assert ".yue2-t-breakbox select { max-width: 100%; min-width: 0; }" in source, (
+        "the list was cut off at the column's edge; it may be no wider than the column")
 
 
 def test_the_track_offers_a_break_beside_going_on_and_says_why_it_cannot():

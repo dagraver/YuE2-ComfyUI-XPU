@@ -30,8 +30,8 @@ const SONGS_TOOLTIP =
     "Open a song this install has already sung, without singing it again. Everything an edit "
     + "needs was remembered when it was sung, so it comes back in a second or two -- which is "
     + "what a workflow opened after a restart is for. The song opened is drawn straight away: "
-    + "this node is run alone, and the track is waiting inside. A song joined to 'audio' wins "
-    + "over the one chosen here, and nothing is run while one is.";
+    + "this node is run alone, and the track is waiting inside. While a song is joined to "
+    + "'audio', opening one here switches 'audio' off.";
 
 const RESET_LABEL = "Reset track";
 const RESET_TOOLTIP =
@@ -194,7 +194,8 @@ function typing(target) {
 }
 
 function singsAgain(op) {
-    return op === "retake" || op === "words" || op === "notes" || op === "extend" || op === "break";
+    return op === "retake" || op === "words" || op === "notes" || op === "extend" || op === "break"
+        || op === "restyle";
 }
 
 function tenths(seconds) {
@@ -297,9 +298,9 @@ const NO_BREAK_HERE =
     + "break between.";
 
 const BREAK_HOW =
-    "Choose the section the break goes before and how many bars it plays. The model writes the "
-    + "break's tune after the section before it, the way it writes a song; nothing is sung in "
-    + "it, and every bar after comes in later by its length.";
+    "Choose the two sections the break goes between and how many bars it plays. The model "
+    + "writes the break's tune after the first of them, the way it writes a song; nothing is "
+    + "sung in it, and every bar after comes in later by its length.";
 
 const BREAK_SUNG =
     "Each take writes and plays its own break. The node listens to every take for a voice left "
@@ -310,8 +311,8 @@ const BREAK_BARS_WHY = "How many bars the break plays, " + list.BREAK_BARS[0] + 
     + list.BREAK_BARS[1] + ".";
 
 const BREAK_BEFORE_WHY =
-    "The section the break goes before. Selecting a section on the strip before pressing "
-    + "Break\u2026 chooses it here.";
+    "Where the break goes: after one section and before the next. A section selected on the "
+    + "strip before pressing Break\u2026 gets the break after it.";
 
 const BREAK_EARLIER =
     "Put the break in a beat earlier: where the section's first line is sung ahead of its bar, "
@@ -333,6 +334,52 @@ const VOICE_LEFT_WHY =
 const RENDER_FIRST_BREAK =
     "Press Render first: a break not yet rendered moves every bar after it, so the track drawn "
     + "here is no longer where this edit would land.";
+
+const NEXT_STYLE = "Sing in this style";
+
+const NEXT_RESTYLE = "Sing it in this style";
+
+const STYLE_WHY =
+    "Sing the selected bars in another style -- other instruments, another voice or manner -- "
+    + "with the same words. The song is sung again in that style as far as these bars, and they "
+    + "are laid into it with the bar before each seam sung again.";
+
+const NO_STYLE_HERE =
+    "This song was sung with 'cot' set to 'off', so it has no score and no bars for another style "
+    + "to sing.";
+
+const STYLE_SELECT =
+    "Select the bars to sing in another style first: click a section on the strip, or drag over "
+    + "bars.";
+
+const STYLE_HOW =
+    "Write the style these bars are to be sung in, as in Style on the song node. The words stay; "
+    + "every take sings the song again in this style as far as the selection, which takes about "
+    + "as long as singing that much of it, and lays its bars in.";
+
+const STYLE_MELODY_WHY =
+    "Same notes keeps the song's tune in these bars. New melody has the model write a tune for "
+    + "the new style -- a rapper's recitative, say -- and goes by whole sections.";
+
+const STYLE_VOICE_WHY =
+    "A voice sits where the notes are, whatever the style says. For a man in a woman's song move "
+    + "it an octave down; an octave up the other way round.";
+
+const STYLE_ALSO_WHY =
+    "Sing the other sections of this name in the same style too, from the same take, so one "
+    + "voice sings them all.";
+
+const STYLE_SUNG =
+    "Each take sings the song again in the style from a seed of its own -- its own singer, as "
+    + "likely as not -- and lays the bars in, the bar before each seam sung again.";
+
+const NEW_WHOLE =
+    "A new melody is written for whole sections. Click a section on the strip, or keep the "
+    + "melody.";
+
+const RENDER_FIRST_RESTYLE =
+    "Press Render first: bars sung in another style not yet rendered may come out longer or "
+    + "shorter, so the track drawn here is no longer where this edit would land.";
 
 const HINT =
     "Drag across the wave to select, and drag either end of a selection to stretch it; hold Alt "
@@ -596,14 +643,19 @@ function toggleAudio(node) {
 
 function chooseSong(node) {
     openSongs(node, nodeSong(node), audioJoined(node), async (row) => {
-        if (row.key === nodeSong(node)) return;
+        if (row.key === nodeSong(node)) {
+            if (audioJoined(node)) toggleAudio(node);
+            return;
+        }
         const { edits } = nodeList(node);
         if (edits.length && !(await confirmed("This node has " + edits.length
             + (edits.length === 1 ? " edit" : " edits")
             + " of the song it is on now. Opening another song throws them away.",
             { title: "Open another song?", ok: "Open it", cancel: "Stay on this one",
               danger: true }))) return;
+        if (audioJoined(node)) setWidgetValue(node, USE_AUDIO, false);
         setWidgetValue(node, SONG, row.key);
+        node.__yue2SongChosen = true;
         node.__yue2SongSaid = (row.style || "no style given") + " \u00b7 "
             + roll.clock(row.seconds || 0);
         writeList(node, []);
@@ -674,7 +726,12 @@ function nodeList(node) {
 }
 
 function writeList(node, edits) {
-    setWidgetValue(node, EDITS, edits.length ? list.writeEdits(edits) : "");
+    setWidgetValue(node, EDITS, edits.length ? list.writeEdits(edits, listSong(node)) : "");
+}
+
+function listSong(node) {
+    const drawn = node.__yue2TrackDrawn?.was;
+    return typeof drawn === "string" && drawn ? drawn : nodeList(node).song || "";
 }
 
 function sectionColor(name) {
@@ -728,7 +785,8 @@ function wasFacts(was, kind) {
         + roll.clock(was.seconds || 0)
         + (kind === "words" ? " the new words replaced"
             : kind === "notes" ? " the new notes replaced"
-                : kind === "extend" ? " of ending the new part replaced" : " the retake replaced")];
+                : kind === "extend" ? " of ending the new part replaced"
+                    : kind === "restyle" ? " the new style replaced" : " the retake replaced")];
     if (typeof was.total === "number") parts.push("song " + roll.clock(was.total));
     parts.push("nothing sung for it");
     return parts.join(" \u00b7 ");
@@ -806,7 +864,7 @@ class TrackWindow {
         this.going = null;
         this.goArea = null;
         this.breaking = null;
-        this.breaking = null;
+        this.restyling = null;
         this.overSaid = null;
         this.playhead = 0;
         this.drag = null;
@@ -965,6 +1023,10 @@ class TrackWindow {
         this.breakButton.title = BREAK_WHY;
         this.breakButton.addEventListener("click", () => this.openBreak());
         chosen.appendChild(this.breakButton);
+        this.styleButton = element("button", "", "Style\u2026");
+        this.styleButton.title = STYLE_WHY;
+        this.styleButton.addEventListener("click", () => this.openStyle());
+        chosen.appendChild(this.styleButton);
         this.undoButton = element("button", "", "Undo last edit");
         this.undoButton.title = "Take the last edit off the list. What it was made on is still in "
             + "memory, so this costs nothing.";
@@ -1058,6 +1120,9 @@ class TrackWindow {
                 return;
             }
             if (this.stopBreaking()) {
+                return;
+            }
+            if (this.stopStyling()) {
                 return;
             }
             if (this.sound) {
@@ -1198,6 +1263,7 @@ class TrackWindow {
         this.going = null;
         this.goArea = null;
         this.breaking = null;
+        this.restyling = null;
         this.setWorking(false);
         this.adoptTakes();
         this.box.title = this.payload && !this.hasScore() ? NO_SCORE_HERE : "";
@@ -1231,6 +1297,11 @@ class TrackWindow {
             if (this.payload.kind === "extend") {
                 return "The song goes on from " + roll.clock(at[0]) + " and now runs "
                     + roll.clock(this.total()) + ". Listen to the takes, or keep another one.";
+            }
+            if (this.payload.kind === "restyle") {
+                return "The new style is in the song, from " + roll.clock(made[0]) + " to "
+                    + roll.clock(made[1]) + ", the bar before each seam sung again. Listen to the "
+                    + "takes, or keep another one.";
             }
             return (this.payload.kind === "words" ? "The new words are in the song, at "
                 : this.payload.kind === "notes" ? "The new notes are in the song, at "
@@ -1397,7 +1468,7 @@ class TrackWindow {
         const canRetake = Boolean(this.payload) && !this.retakeButton.disabled;
         const canFade = Boolean(this.payload) && !this.cutButton.disabled && Boolean(edge);
         const sings = canRetake || ((Boolean(this.editing) || Boolean(this.going)
-            || Boolean(this.breaking)) && !this.working);
+            || Boolean(this.breaking) || Boolean(this.restyling)) && !this.working);
         this.knobsRow.hidden = !sings && !canFade;
         this.seedKnob.hidden = !sings;
         this.varyKnob.box.hidden = !sings;
@@ -1444,6 +1515,8 @@ class TrackWindow {
         const breaks = list.breakLines(this.grid()).length > 0;
         this.breakButton.disabled = busy || !drawn || !breaks;
         this.breakButton.title = drawn && !breaks ? NO_BREAK_HERE : BREAK_WHY;
+        this.styleButton.disabled = busy || !drawn || !this.payload?.score;
+        this.styleButton.title = drawn && !this.payload?.score ? NO_STYLE_HERE : STYLE_WHY;
         this.undoButton.disabled = busy || !edits.length;
         this.songsButton.disabled = busy;
         this.renderButton.disabled = busy;
@@ -1516,6 +1589,10 @@ class TrackWindow {
                            SUNG_ONCE];
             return { head: head, facts: facts.filter(Boolean), label: NEXT_BREAK, why: RUN_WHY };
         }
+        if (edit.op === "restyle") {
+            const facts = [this.restyleFact(edit), STYLE_SUNG, this.takeFact(edit), SUNG_ONCE];
+            return { head: head, facts: facts.filter(Boolean), label: NEXT_RESTYLE, why: RUN_WHY };
+        }
         if (edit.op === "extend") {
             const facts = [this.goOnFact()];
             const sung = list.sungLines(edit.text);
@@ -1546,6 +1623,14 @@ class TrackWindow {
         if (edit.op === "break") {
             return "Plays it " + edit.takes + (edit.takes === 1 ? " time" : " times")
                 + ", each take writing its own tune, and keeps one with no voice left in it.";
+        }
+        if (edit.op === "restyle") {
+            return "Sings the song in the style " + edit.takes
+                + (edit.takes === 1 ? " time" : " times")
+                + (this.payload?.hears
+                    ? ", hears every take, and keeps the one heard singing the most of the words "
+                        + "there."
+                    : ", and keeps the first take; the others are there to compare.");
         }
         if (edit.op === "extend") {
             return "Sings it " + edit.takes + (edit.takes === 1 ? " time" : " times")
@@ -1599,13 +1684,12 @@ class TrackWindow {
     breakFact(to, length, at = null, marked = false) {
         const grid = this.grid();
         if (!list.barCount(grid)) return "";
-        const section = (grid.sections || []).find((item) => item.bar === to);
         const bar = list.lineAt(grid, to);
         const next = list.lineAt(grid, Math.min(list.barCount(grid), to + 1));
         const about = Math.max(0, next - bar) * length;
         const place = this.breakPlaces(to).find((item) => item.at === (at ?? null));
-        return "Plays " + length + (length === 1 ? " bar" : " bars") + " before the "
-            + (section ? section.name : "bar " + (to + 1)) + " at " + roll.clock(bar)
+        return "Plays " + length + (length === 1 ? " bar " : " bars ") + list.breakBetween(grid, to)
+            + " at " + roll.clock(bar)
             + ", about " + about.toFixed(1) + " s; everything after it comes in that much later."
             + (place ? " It goes in at " + tenths(place.second) + ", " + beatsText(place.beats)
                 + (marked ? ", where the green mark is." : ".") : "");
@@ -1773,7 +1857,9 @@ class TrackWindow {
         head.appendChild(element("span", "", (going ? "Takes of the song going on from "
             : playing ? "Takes of the break at "
             : words ? "Takes of the new words at "
-            : this.payload.kind === "notes" ? "Takes of the new notes at " : "Takes of the retake at ")
+            : this.payload.kind === "notes" ? "Takes of the new notes at "
+            : this.payload.kind === "restyle" ? "Takes of the new style at "
+            : "Takes of the retake at ")
             + where + " -- the one chosen is the track above, so playing compares them in place."));
         this.takesRow.appendChild(head);
         if (!same) this.takesRow.appendChild(element("div", "yue2-t-warn", OTHER_LIST));
@@ -1874,7 +1960,8 @@ class TrackWindow {
         this.marked = "";
         const text = this.payload?.lyrics || "";
         this.goArea = null;
-        if (!text.trim() && !this.going && !this.breaking) {
+        this.styleArea = null;
+        if (!text.trim() && !this.going && !this.breaking && !this.restyling) {
             this.words.hidden = true;
             this.split.hidden = true;
             return;
@@ -1883,6 +1970,7 @@ class TrackWindow {
         this.split.hidden = false;
         this.words.appendChild(element("div", "yue2-t-wordhead", "Words"));
         if (this.breaking) this.words.appendChild(this.breakBox());
+        if (this.restyling) this.words.appendChild(this.styleBox());
         const raw = this.rawLines();
         let at = 0;
         this.wordArea = null;
@@ -2044,7 +2132,10 @@ class TrackWindow {
             this.editing = { first: number, stop: number + 1,
                              text: this.linesText(number, number + 1) };
         }
-        if (this.editing) this.breaking = null;
+        if (this.editing) {
+            this.breaking = null;
+            this.restyling = null;
+        }
         this.paintWords();
         if (this.wordArea) {
             this.wordArea.focus();
@@ -2166,6 +2257,7 @@ class TrackWindow {
         this.editing = null;
         this.wordArea = null;
         this.breaking = null;
+        this.restyling = null;
         if (!this.going) this.going = { text: "" };
         this.paintWords();
         this.paintKnobs();
@@ -2214,15 +2306,14 @@ class TrackWindow {
         });
         bars.addEventListener("keydown", (event) => this.breakKey(event));
         row.appendChild(bars);
-        row.appendChild(element("span", "yue2-t-dim", "bars before"));
+        row.appendChild(element("span", "yue2-t-dim", "bars between"));
         const before = document.createElement("select");
         before.title = BREAK_BEFORE_WHY;
         for (const bar of list.breakLines(grid)) {
-            const section = (grid.sections || []).find((item) => item.bar === bar);
             const option = document.createElement("option");
             option.value = String(bar);
-            option.textContent = (section ? "the " + section.name : "bar " + (bar + 1)) + " at "
-                + roll.clock(list.lineAt(grid, bar)) + ", bar " + (bar + 1);
+            option.textContent = list.breakPair(grid, bar) + ", " + roll.clock(list.lineAt(grid, bar));
+            option.title = list.breakBetween(grid, bar) + ", bar " + (bar + 1);
             before.appendChild(option);
         }
         before.value = String(this.breaking.to);
@@ -2293,17 +2384,7 @@ class TrackWindow {
     }
 
     breakBefore() {
-        const grid = this.grid();
-        const lines = list.breakLines(grid);
-        if (!lines.length) return null;
-        if (this.selection && this.selection.first !== null && this.selection.first !== undefined) {
-            if (lines.includes(this.selection.first)) return this.selection.first;
-            const seconds = lines.map((bar) => list.lineAt(grid, bar));
-            return lines[list.nearestIn(seconds, list.lineAt(grid, this.selection.first))];
-        }
-        const chorus = (grid.sections || []).find((section) => lines.includes(section.bar)
-            && list.labelOf(section.name) === "chorus");
-        return chorus ? chorus.bar : lines[0];
+        return list.breakLineFor(this.grid(), this.selection);
     }
 
     openBreak() {
@@ -2321,6 +2402,7 @@ class TrackWindow {
         this.wordArea = null;
         this.going = null;
         this.goArea = null;
+        this.restyling = null;
         this.breaking = { to, length: this.breaking ? this.breaking.length : list.BREAK_LENGTH,
                           at: null };
         this.paintWords();
@@ -2386,7 +2468,211 @@ class TrackWindow {
             && spelled(drawn.edits[shared]) === spelled(mine.edits[shared])) shared += 1;
         const apart = drawn.edits.slice(shared).concat(mine.edits.slice(shared));
         return apart.some((edit) => edit.op === "cut" || edit.op === "extend"
-            || edit.op === "move" || edit.op === "break") ? RENDER_FIRST_BREAK : "";
+            || edit.op === "move" || edit.op === "break" || edit.op === "restyle")
+            ? RENDER_FIRST_BREAK : "";
+    }
+
+    styleChoice(row, why, choices, value, chosen) {
+        const box = document.createElement("select");
+        box.title = why;
+        for (const [option, said] of choices) {
+            const item = document.createElement("option");
+            item.value = String(option);
+            item.textContent = said;
+            box.appendChild(item);
+        }
+        box.value = String(value);
+        box.addEventListener("change", () => {
+            if (!this.restyling) return;
+            chosen(box.value);
+            this.paintStyleFact();
+        });
+        box.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.stopPropagation();
+                this.stopStyling();
+            }
+        });
+        row.appendChild(box);
+        return box;
+    }
+
+    styleBox() {
+        const box = element("div", "yue2-t-wordbox yue2-t-gobox yue2-t-stylebox");
+        box.appendChild(element("div", "yue2-t-tag", "Another style"));
+        const area = document.createElement("textarea");
+        area.className = "yue2-t-wordarea";
+        area.rows = 3;
+        area.value = this.restyling.style;
+        area.placeholder = this.payload?.style || "";
+        area.spellcheck = false;
+        area.title = STYLE_HOW;
+        area.addEventListener("input", () => {
+            if (this.restyling) this.restyling.style = area.value;
+            this.fitBox(area);
+        });
+        area.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.stopPropagation();
+                this.stopStyling();
+            } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                this.putStyle();
+            }
+        });
+        box.appendChild(area);
+        this.styleArea = area;
+        const row = element("div", "yue2-t-wordrow");
+        this.styleChoice(row, STYLE_MELODY_WHY, [["same", "Same notes"], ["new", "New melody"]],
+            this.restyling.melody, (value) => { this.restyling.melody = value; });
+        this.styleChoice(row, STYLE_VOICE_WHY,
+            [[0, "Voice where it is"], [-1, "An octave down"], [1, "An octave up"]],
+            this.restyling.octave, (value) => { this.restyling.octave = Number(value); });
+        box.appendChild(row);
+        const others = list.sameSections(this.grid(), this.restyling.selection);
+        if (others.length) {
+            const named = list.sectionStretch(this.grid(), this.restyling.selection).name;
+            const line = element("label", "yue2-t-wordrow yue2-t-tickrow yue2-t-dim");
+            line.title = STYLE_ALSO_WHY;
+            const tick = document.createElement("input");
+            tick.type = "checkbox";
+            tick.checked = this.restyling.also;
+            tick.addEventListener("change", () => {
+                if (!this.restyling) return;
+                this.restyling.also = tick.checked;
+                this.paintStyleFact();
+                this.draw();
+            });
+            line.appendChild(tick);
+            const many = others.length === 1 ? named : others.length + " " + named + "s";
+            line.appendChild(element("span", "yue2-t-grow",
+                "and the other " + many + ", in the same voice"));
+            box.appendChild(line);
+        }
+        const buttons = element("div", "yue2-t-wordrow");
+        const go = element("button", "yue2-t-go", NEXT_STYLE);
+        go.title = STYLE_WHY;
+        go.disabled = this.working;
+        go.addEventListener("click", () => this.putStyle());
+        buttons.appendChild(go);
+        const stop = element("button", "", "Cancel");
+        stop.addEventListener("click", () => this.stopStyling());
+        buttons.appendChild(stop);
+        box.appendChild(buttons);
+        this.styleWhy = element("div", "yue2-t-wordwhy", "");
+        box.appendChild(this.styleWhy);
+        this.paintStyleFact();
+        return box;
+    }
+
+    styledEdit() {
+        if (!this.restyling) return null;
+        const chosen = this.restyling.selection;
+        const also = this.restyling.also ? list.sameSections(this.grid(), chosen) : [];
+        return list.restyleFor(chosen, also, this.restyling.style, this.restyling.melody,
+            this.restyling.octave, nodeTakes(this.node), this.knobs.seed,
+            { vary: this.knobs.vary, guide: this.knobs.guide });
+    }
+
+    paintStyleFact() {
+        if (!this.styleWhy || !this.restyling) return;
+        this.styleWhy.replaceChildren();
+        const edit = this.styledEdit();
+        const whole = list.wholeSections(this.grid(), edit.bars[0], edit.bars[1]);
+        this.styleWhy.appendChild(document.createTextNode(
+            [this.restyleFact(edit, false), edit.melody === "new" && !whole ? NEW_WHOLE : STYLE_HOW]
+                .filter(Boolean).join(" ")));
+        this.styleWhy.appendChild(element("div", "yue2-t-wordknobs", WORDS_KNOBS));
+    }
+
+    restyleFact(edit, named = true) {
+        const grid = this.grid();
+        if (!list.barCount(grid) || !edit.bars) return "";
+        const spans = [edit.bars].concat(edit.also || []).sort((one, two) => one[0] - two[0])
+            .map((bars) => list.spanText(list.lineAt(grid, bars[0]), list.lineAt(grid, bars[1])));
+        return "Sings " + spans.join(" and ") + (named ? " in the style " + list.restyleTitle(edit)
+            : " in the new style")
+            + (edit.melody === "new" ? ", to a melody the model writes for it"
+                : ", to the song's own notes")
+            + (edit.octave < 0 ? ", an octave lower" : edit.octave > 0 ? ", an octave higher" : "")
+            + ".";
+    }
+
+    whyNotStyle() {
+        if (!this.payload) return NOT_DRAWN;
+        if (!this.payload.score) return NO_STYLE_HERE;
+        const chosen = this.selection;
+        if (!chosen || chosen.first === null || chosen.first === undefined) return STYLE_SELECT;
+        return list.whyNotEdit(this.selection, this.total()) || this.whyNotMore(this.selection);
+    }
+
+    openStyle() {
+        const why = this.whyNotStyle();
+        if (why) {
+            this.setStatus(why, true);
+            return;
+        }
+        this.editing = null;
+        this.wordArea = null;
+        this.going = null;
+        this.goArea = null;
+        this.stopBreaking();
+        const kept = this.restyling;
+        this.restyling = { selection: { ...this.selection },
+                           style: kept ? kept.style : String(this.payload?.style || ""),
+                           melody: kept ? kept.melody : "same",
+                           octave: kept ? kept.octave : 0, also: kept ? kept.also : true };
+        this.paintWords();
+        this.paintKnobs();
+        this.draw();
+        if (this.styleArea) {
+            this.styleArea.focus();
+            this.styleArea.scrollIntoView?.({ block: "nearest" });
+        }
+        this.setStatus(STYLE_HOW);
+    }
+
+    stopStyling() {
+        if (!this.restyling) return false;
+        this.restyling = null;
+        this.styleArea = null;
+        this.styleWhy = null;
+        this.paintWords();
+        this.paintKnobs();
+        this.draw();
+        return true;
+    }
+
+    putStyle() {
+        if (!this.restyling || this.working) return;
+        const made = this.styledEdit();
+        if (!made.style) {
+            this.setStatus("Write the style to sing these bars in first.", true);
+            return;
+        }
+        if (made.melody === "new" && !list.wholeSections(this.grid(), made.bars[0], made.bars[1])) {
+            this.setStatus(NEW_WHOLE, true);
+            return;
+        }
+        const why = this.whyNotMore(this.restyling.selection);
+        if (why) {
+            this.setStatus(why, true);
+            return;
+        }
+        const { edits, error } = nodeList(this.node);
+        if (error) {
+            this.setStatus(error, true);
+            return;
+        }
+        writeList(this.node, [...edits, made]);
+        paintSummary(this.node);
+        this.restyling = null;
+        this.styleArea = null;
+        this.styleWhy = null;
+        this.selection = null;
+        this.refresh();
+        this.setStatus(list.describeEdit(made, edits.length).slice(3) + " is on the list. "
+            + BY_ITSELF);
     }
 
     stopGoing() {
@@ -3280,6 +3566,7 @@ class TrackWindow {
         if (apart.some((edit) => edit.op === "extend")) return RENDER_FIRST_GO_ON;
         if (apart.some((edit) => edit.op === "move")) return RENDER_FIRST_MOVE;
         if (apart.some((edit) => edit.op === "break")) return RENDER_FIRST_BREAK;
+        if (apart.some((edit) => edit.op === "restyle")) return RENDER_FIRST_RESTYLE;
         if (selection.first === undefined || selection.first === null) return RENDER_FIRST_SECONDS;
         return "";
     }
@@ -3349,8 +3636,8 @@ class TrackWindow {
             && spelled(drawn.edits[shared]) === spelled(mine.edits[shared])) shared += 1;
         const apart = drawn.edits.slice(shared).concat(mine.edits.slice(shared));
         return apart.some((edit) => edit.op === "cut" || edit.op === "notes"
-            || edit.op === "extend" || edit.op === "move" || edit.op === "break")
-            ? RENDER_FIRST_NOTES : "";
+            || edit.op === "extend" || edit.op === "move" || edit.op === "break"
+            || edit.op === "restyle") ? RENDER_FIRST_NOTES : "";
     }
 
     whyNotGoOn() {
@@ -3366,8 +3653,8 @@ class TrackWindow {
             && spelled(drawn.edits[shared]) === spelled(mine.edits[shared])) shared += 1;
         const apart = drawn.edits.slice(shared).concat(mine.edits.slice(shared));
         return apart.some((edit) => edit.op === "cut" || edit.op === "notes"
-            || edit.op === "extend" || edit.op === "move" || edit.op === "break")
-            ? RENDER_FIRST_GOING : "";
+            || edit.op === "extend" || edit.op === "move" || edit.op === "break"
+            || edit.op === "restyle") ? RENDER_FIRST_GOING : "";
     }
 
     openNotes() {
@@ -3569,8 +3856,12 @@ const STYLE = `
     font-size: 10px; line-height: 1.45; color: var(--descrip-text, #8FA3AD); }
 .yue2-t-wordknobs { margin-top: 4px; color: #9CC4E0; }
 .yue2-t-wordrow { display: flex; gap: 6px; flex-wrap: wrap; }
+.yue2-t-tickrow { flex-wrap: nowrap; align-items: center; cursor: pointer; }
+.yue2-t-tickrow > span { min-width: 0; }
 .yue2-t-nudge { min-width: 30px; padding: 2px 8px; }
 .yue2-t-nudges { align-items: center; margin-bottom: 4px; }
+.yue2-t-breakbox select { max-width: 100%; min-width: 0; }
+.yue2-t-breakbox .yue2-t-seed { width: 56px; }
 .yue2-t-words .yue2-t-now { background: rgba(240, 176, 88, 0.16); border-left-color: #F0B058;
     color: var(--input-text, #eee); }
 .yue2-t-words .yue2-t-over { background: rgba(255, 255, 255, 0.05);
@@ -3691,6 +3982,12 @@ app.registerExtension({
             const result = onExecuted?.apply(this, arguments);
             const drawn = message?.[TRACK_UI]?.[0];
             if (drawn && typeof drawn === "object") {
+                if (drawn.joined && typeof drawn.was === "string" && drawn.was
+                    && (audioOn(this) || !this.__yue2SongChosen)) {
+                    setWidgetValue(this, SONG, drawn.was);
+                    this.__yue2SongSaid = "";
+                }
+                this.__yue2SongChosen = false;
                 this.__yue2TrackDrawn = drawn;
                 this.__yue2TrackSong = message?.[AUDIO_UI]?.[0] || null;
                 this.__yue2TrackStamp = Date.now();
