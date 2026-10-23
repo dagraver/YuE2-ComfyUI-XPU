@@ -526,7 +526,7 @@ def load(path: str, n_ctx: int, device: str, progress=None):
         log.info("[yue2_comfy.llm] loading %s with n_ctx=%d, gpu_layers=%d, main_gpu=%d",
                  path, n_ctx, gpu_layers, main_gpu)
         llama = Llama(model_path=path, n_ctx=int(n_ctx), n_gpu_layers=gpu_layers,
-                      main_gpu=main_gpu, verbose=False)
+                      main_gpu=main_gpu, flash_attn=True, verbose=False)
         _STATE["key"] = key
         _STATE["llama"] = llama
         return llama
