@@ -12,7 +12,8 @@ import logging
 import os
 import time
 
-from . import devices, edits, phrasing, songs, transpose
+from . import checkpoints, devices, edits, generation_info, phrasing, songs, transpose
+from .generation_info import YuE2GenerationInfo
 from .constants import (
     ATTENTION_CHOICES, CATEGORY, COT_CHOICES, DEFAULT_IDEA, DEFAULT_LYRICS,
     DEFAULT_OPTIONS, DEFAULT_STYLE, DOWNLOAD_CHOICES, LANGUAGE_CHOICES, LEGACY_ATTENTION,
@@ -304,6 +305,9 @@ class YuE2Options:
                                             "tooltip": VOCALS_ONLY_TOOLTIP}),
                 "low_vram": ("BOOLEAN", {"default": d["low_vram"],
                                          "tooltip": LOW_VRAM_TOOLTIP}),
+                "checkpoint": (checkpoints.choices(), {"default": "auto",
+                               "tooltip": "The local YuE2 checkpoint. 'auto' keeps the existing model search. "
+                               "An explicit file wins over 'quantization' and is kept with the song and plan."}),
             },
         }
 
@@ -313,7 +317,15 @@ class YuE2Options:
     CATEGORY = CATEGORY
 
     @classmethod
-    def VALIDATE_INPUTS(cls, attention_backend=DEFAULT_OPTIONS["attention_backend"]):
+    def IS_CHANGED(cls, checkpoint="auto", **_inputs):
+        """Replacing explicit weights under the same name invalidates cached plans and songs."""
+        if checkpoint == "auto":
+            return "auto"
+        path = checkpoints.catalogue().get(checkpoint)
+        return (checkpoint, checkpoints._stamp(path) if path else None)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, attention_backend=DEFAULT_OPTIONS["attention_backend"], checkpoint="auto"):
         """Let a workflow saved with an attention choice that is gone still run.
 
         ComfyUI checks a list widget against its list unless this names the
@@ -322,6 +334,8 @@ class YuE2Options:
         with "Value not in list". It runs as what replaced it; see
         ``attention.LEGACY``.
         """
+        if not isinstance(checkpoint, str):
+            return "checkpoint must be 'auto' or a local YuE2 checkpoint from the list."
         if attention_backend in ATTENTION_CHOICES or attention_backend in LEGACY_ATTENTION:
             return True
         return "attention_backend must be one of {}, not {!r}".format(
@@ -387,8 +401,8 @@ class YuE2GenerateSong:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("AUDIO", "STRING")
-    RETURN_NAMES = ("audio", "score_abc")
+    RETURN_TYPES = ("AUDIO", "STRING", "STRING")
+    RETURN_NAMES = ("audio", "score_abc", "generation_info")
     FUNCTION = "generate"
     CATEGORY = CATEGORY
 
@@ -457,7 +471,8 @@ class YuE2GenerateSong:
               edits.AUTO_SECONDS_UI: [auto_seconds(lyrics)], edits.SUNG_UI: [lyrics]}
         if edited is None:
             ui[edits.SCORE_UI] = [written]
-        return {"ui": ui, "result": (audio, score)}
+        return {"ui": ui, "result": (audio, score,
+                generation_info.encode(style, lyrics, seed, settings, score))}
 
 
 class YuE2WriteSong:
@@ -595,6 +610,7 @@ NODE_CLASS_MAPPINGS = {
     "YuE2GenerateSong": YuE2GenerateSong,
     "YuE2WriteSong": YuE2WriteSong,
     "YuE2Options": YuE2Options,
+    "YuE2GenerationInfo": YuE2GenerationInfo,
 }
 NODE_CLASS_MAPPINGS.update(STAGED_CLASSES)
 NODE_CLASS_MAPPINGS.update(TRANSCRIBE_CLASSES)
@@ -607,6 +623,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "YuE2GenerateSong": "YuE2 Generate Song",
     "YuE2WriteSong": "YuE2 Write Song",
     "YuE2Options": "YuE2 Options",
+    "YuE2GenerationInfo": "YuE2 Generation Info",
 }
 NODE_DISPLAY_NAME_MAPPINGS.update(STAGED_NAMES)
 NODE_DISPLAY_NAME_MAPPINGS.update(TRANSCRIBE_NAMES)
