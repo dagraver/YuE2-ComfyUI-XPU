@@ -41,6 +41,19 @@ finds is published as the release notes, English above Russian.
 - Decoding existing latents keeps the original singing settings in the saved
   song and exported parameters, even when the decode node has different options.
 
+### The fork
+
+- **`sdpa` on an Intel card is torch's fused kernel, and it stays the default.**
+  The fork was asked whether a faster attention kernel exists for XPU. One does
+  not. torch's XPU build answers a `sdpa` call with oneDNN's fused `micro_sdpa`
+  kernel, grouped-query attention included; `sdpa_kernel` does not select a
+  backend there, and the CUDA kernels behind `fast` and `flash` are not built
+  for XPU. Measured on an Arc Pro B70 at a song's KV length, a hand-written
+  grouped call took 5.5x as long and widening K/V to every query head 1.4x.
+  The token loop is limited by the weights it reads -- 6.7 GB a token, about
+  10 ms for the 3B model in bfloat16 -- and the KV a step reads adds about
+  1.5 ms. All three READMEs say so now.
+
 ## 0.14.2 - 2026-10-25
 
 Upstream closes what the Comfy Registry's security review points at. The

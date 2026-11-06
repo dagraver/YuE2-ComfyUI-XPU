@@ -1608,7 +1608,13 @@ when this node is not on the graph at all.
   [Reproducibility](#reproducibility). A workflow saved with the old `cudnn`
   runs as `fast`. `fast` and `flash` are CUDA kernels and need an RTX 30 card
   or newer; on an older one, and on an Intel card, the node stops at once and
-  says to choose `sdpa`.
+  says to choose `sdpa`. On an Intel card `sdpa` is not the fallback it is on an
+  old NVIDIA one: torch's XPU build answers it with oneDNN's fused `micro_sdpa`
+  kernel, grouped-query attention included, and the alternatives are measured
+  slower -- a hand-written grouped call takes 5.5x as long, widening K/V to
+  every query head 1.4x. The token loop is limited by reading the weights, not
+  by attention: on an Arc Pro B70 the 3B model in bfloat16 moves 6.7 GB a token
+  in about 10 ms, and the KV a step reads adds about 1.5 ms at a song's length.
 - `download`, `quantization` -- where the weights come from when they are not
   on the machine yet, and which build to fetch. See
   [Where the weights go](#where-the-weights-go).
